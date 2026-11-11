@@ -1,0 +1,63 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>3D VTuber (VRM)</title><link rel="icon" href="data:,"><link rel="stylesheet" href="style.css?v=1">
+<script type="importmap">{"imports":{"three":"./lib/three/three.module.js","three/addons/":"./lib/three/addons/","@pixiv/three-vrm":"./lib/three-vrm/three-vrm.module.min.js"}}</script>
+</head><body>
+<div id="stage"><canvas id="c"></canvas><div id="drop" hidden>여기에 .vrm 파일을 놓으세요</div></div>
+<div id="hud"><span id="fps">FPS -</span> · <span id="tfps">추적 -</span> · <span id="status">대기 중</span><div id="meter" hidden>신남 <span class="track"><span id="meterBar"></span></span> 음량 <span class="track"><span id="lvBar"></span></span></div></div>
+<video id="video" playsinline muted autoplay></video>
+<button id="panelToggle" title="설정 열기/닫기">⚙</button>
+<div id="panel">
+ <h1>3D VTuber <small>VRM</small></h1>
+ <div class="row"><button id="start" class="big">▶ 카메라 시작</button><button id="demo">데모 모드</button></div>
+ <div class="row"><button id="micBtn">🎤 마이크 켜기</button><button id="calib" title="정면을 보고 무표정으로 누르세요">🎯 정면 보정</button></div>
+ <div id="err" hidden></div>
+ <div class="hint" id="avatarName">아바타: -</div>
+ <div class="row"><label class="filebtn">📂 VRM 불러오기<input type="file" id="vrmFile" accept=".vrm,model/gltf-binary,application/octet-stream" hidden></label><button id="vrmDefault">기본 아바타</button></div>
+ <p class="hint">.vrm 파일을 화면에 끌어다 놓아도 돼요 (VRM 0.x / 1.0). 파일은 이 기기 안에만 저장돼요.</p>
+ <div class="hint">표정 (키 1~6)</div>
+ <div id="expr" class="row"></div>
+
+ <details open><summary>얼굴 추적</summary>
+  <label>부드러움 <input type="range" id="smooth" min="0" max="1" step="0.01" value="0.55"><output></output></label>
+  <label>빠른 움직임 반응 <input type="range" id="beta" min="0" max="1" step="0.01" value="0.5"><output></output></label>
+  <label>고개 감도 <input type="range" id="headSens" min="0.5" max="2" step="0.05" value="1.1"><output></output></label>
+  <label>몸 따라오기 <input type="range" id="bodyFollow" min="0" max="1" step="0.05" value="0.45"><output></output></label>
+  <label>입 감도 <input type="range" id="mouthSens" min="0.5" max="3" step="0.05" value="1.6"><output></output></label>
+  <label>눈 감김 기준 <input type="range" id="blinkTh" min="0.25" max="0.9" step="0.01" value="0.55"><output></output></label>
+  <label>시선 세기 <input type="range" id="gaze" min="0" max="2" step="0.05" value="1"><output></output></label>
+  <label>감정 감도 <input type="range" id="emoSens" min="0" max="2" step="0.05" value="1"><output></output></label>
+  <label><input type="checkbox" id="wink" checked> 윙크 (좌우 눈 따로)</label>
+  <label><input type="checkbox" id="autoEmo" checked> 표정 자동 인식 (웃음·화남·슬픔·놀람)</label>
+  <label><input type="checkbox" id="mirror" checked> 거울 모드 (셀카처럼 좌우 반전)</label>
+  <label><input type="checkbox" id="preview"> 카메라 미리보기</label>
+ </details>
+ <details><summary>움직임 · 마이크</summary>
+  <label><input type="checkbox" id="autoBlink" checked> 자동 눈 깜빡임 (얼굴 인식 안 될 때)</label>
+  <label><input type="checkbox" id="breath" checked> 숨쉬기 · 살짝 흔들림</label>
+  <label>팔 내림 <input type="range" id="armDown" min="0" max="85" step="1" value="72"><output></output></label>
+  <label>립싱크 (마이크) <select id="lipMode"><option value="off">끔</option><option value="fallback" selected>얼굴 인식 안 될 때만</option><option value="boost">항상 보강</option></select></label>
+  <label>신남 감도 <input type="range" id="micSens" min="0.5" max="2" step="0.05" value="1"><output></output></label>
+  <label><input type="checkbox" id="micBounce" checked> 신나면 통통 튀기</label>
+  <label><input type="checkbox" id="micExpr" checked> 신나면 표정 자동 변경 (웃음)</label>
+ </details>
+ <details><summary>카메라 · 조명</summary>
+  <div class="row" id="frameRow"><button data-f="bust" class="on">상반신</button><button data-f="full">전신</button></div>
+  <label>확대 <input type="range" id="zoom" min="0.4" max="2.5" step="0.01" value="1"><output></output></label>
+  <label>높이 <input type="range" id="camY" min="-0.5" max="0.5" step="0.01" value="0"><output></output></label>
+  <label>좌우 <input type="range" id="camX" min="-0.6" max="0.6" step="0.01" value="0"><output></output></label>
+  <label>회전 <input type="range" id="camRot" min="-45" max="45" step="1" value="0"><output></output></label>
+  <label>밝기 <input type="range" id="light" min="0.2" max="2" step="0.05" value="1"><output></output></label>
+  <label>조명 방향 <input type="range" id="lightDir" min="-90" max="90" step="1" value="-25"><output></output></label>
+  <button id="camReset">카메라 초기화</button>
+ </details>
+ <details><summary>배경 · OBS</summary>
+  <label>배경색 <input type="color" id="bg" value="#00ff00"> <button id="green">그린스크린</button></label>
+  <label><input type="checkbox" id="transp"> 투명 배경 (OBS 브라우저 소스용)</label>
+  <button id="clean">클린 뷰 (h)</button>
+  <button id="obsCopy">📋 OBS 브라우저 소스 주소 복사</button>
+  <div id="obsMsg" class="hint" hidden></div>
+ </details>
+ <p class="hint">단축키: 1 자동 · 2 웃음 · 3 화남 · 4 슬픔 · 5 즐거움 · 6 놀람 · h 클린 뷰 · Esc/더블탭 해제<br>영상·음성은 이 브라우저 안에서만 처리되고 어디에도 전송되지 않아요.</p>
+</div>
+<script type="module" src="js/app.js?v=1"></script></body></html>
