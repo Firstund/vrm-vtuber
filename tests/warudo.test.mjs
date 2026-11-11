@@ -1,6 +1,7 @@
 // node --test tests/warudo.test.mjs — Warudo 호환 공식 단위 테스트
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import * as WD from '../js/warudo.js';
 const near = (a, b, e = 1e-6) => assert.ok(Math.abs(a - b) < e, `${a} ≈ ${b}`);
 const cfg = o => ({ ...structuredClone(WD.DEFAULTS), ...o });
@@ -56,11 +57,38 @@ test('트리거 조건: mouthSmileLeft·Right 둘 다 ≥0.5면 들어가고, �
   E.triggers({ mouthSmileLeft: 0.1, mouthSmileRight: 0.1 }, 1); E.triggers({}, 2.5); assert.equal(E.isActive('Joy'), true);
   E.triggers({}, 3.01); assert.equal(E.isActive('Joy'), false);
 });
-test('VRM 표정 가져오기: 기본 클립은 layer 0, 추가 클립은 1,2,…', () => {
-  const l = WD.importVrmExpressions(['aa', 'blink', 'happy', 'sad', 'Tears', 'Sparkle', 'jawOpen']);
-  assert.deepEqual(l.map(e => [e.Name, e.Layer]), [['Joy', 0], ['Sorrow', 0], ['Tears', 1], ['Sparkle', 2]]);
+test('VRM 표정 가져오기 (real, VRM 1.0): 이름 그대로, 기본 5개 layer 0, 추가는 1,2,…, override → Disable 플래그, Alt 단축키', () => {
+  const ov = { happy: { blink: 'block', mouth: 'block' }, Tears: { blink: 'none', mouth: 'block' } };
+  const l = WD.importVrmExpressions(['aa', 'blink', 'happy', 'sad', 'Tears', 'Sparkle', 'jawOpen'], { overrides: ov });
+  assert.deepEqual(l.map(e => [e.Name, e.Layer, e.Hotkey]), [['happy', 0, 'Alt+1'], ['sad', 0, 'Alt+2'], ['Tears', 1, 'Alt+3'], ['Sparkle', 2, 'Alt+4']]);
+  assert.equal(l[0].DisableEyeBlinkTracking, true); assert.equal(l[0].DisableMouthTracking, true); assert.equal(l[0].DisableBrowTracking, false);
+  assert.equal(l[2].DisableEyeBlinkTracking, false); assert.equal(l[2].DisableMouthTracking, true);
   assert.equal(l[0].EnterDuration, 0.4); assert.equal(l[0].ExitDuration, 0.4);
+  assert.equal(WD.importVrmExpressions(['happy'], { vrm0: true })[0].Name, 'Joy'); // VRM0 이름은 inferred
 });
+test('real: MediaPipe 초기 매핑 (eyeBlink 0.3~0.7, jaw/funnel/pucker 출력 -0.15~1, 나머지 0~1)', () => {
+  const m = idx(WD.defaultMapping()); assert.equal(Object.keys(m).length, 52);
+  assert.deepEqual([m.eyeBlinkLeft.SourceValueMin, m.eyeBlinkLeft.SourceValueMax, m.eyeBlinkLeft.TargetValueMin, m.eyeBlinkLeft.TargetValueMax], [0.3, 0.7, 0, 1]);
+  for (const n of ['jawOpen', 'mouthFunnel', 'mouthPucker']) assert.equal(m[n].TargetValueMin, -0.15);
+  assert.deepEqual([m.mouthSmileLeft.SourceValueMin, m.mouthSmileLeft.SourceValueMax, m.mouthSmileLeft.TargetValueMin, m.mouthSmileLeft.TargetValueMax], [0, 1, 0, 1]);
+  near(WD.processBlendShapes({ eyeBlinkLeft: 0.22 }, cfg({}), m).eyeBlinkLeft, 0); // 뜬 눈 기본값 ~0.2 → 0
+  near(WD.processBlendShapes({ eyeBlinkLeft: 0.5 }, cfg({}), m).eyeBlinkLeft, 0.6); // (0.5) × 1.2
+});
+test('real: VRM 변환 공식 (aa = jaw×1.2 − funnel, oh = funnel×3 + lowerDown합×0.5, ih = smile합×2×jaw, ou = pucker, ee 없음)', () => {
+  const v = WD.vrmFromArkit({ jawOpen: 0.5, mouthFunnel: 0.1, mouthLowerDownLeft: 0.1, mouthLowerDownRight: 0.1, mouthSmileLeft: 0.2, mouthSmileRight: 0.2, mouthPucker: 0.05, eyeBlinkLeft: 0.7, browInnerUp: 0.3, browDownLeft: 0.4, eyeLookUpLeft: 0.4, eyeLookUpRight: 0.2 });
+  near(v.aa, 0.5); near(v.oh, 0.4); near(v.ih, 0.4); near(v.ou, 0.05); near(v.blinkLeft, 0.7); near(v['Brows up'], 0.3); near(v['Brows down'], 0.4); near(v.LookUp, 0.3);
+  assert.equal('ee' in v, false);
+});
+test('real: Constrain 순서 aa→oh, ih→oh, aa→ih, ou→(ih,aa,oh) (대상 ≤ 1 − 제약, 공식 inferred)', () => {
+  const v = WD.vrmFromArkit({ jawOpen: 1, mouthFunnel: 0, mouthLowerDownLeft: 1, mouthLowerDownRight: 1, mouthSmileLeft: 0.5, mouthSmileRight: 0.5 });
+  near(v.aa, 1); near(v.oh, 0); near(v.ih, 0);
+  const w = WD.vrmFromArkit({ mouthPucker: 0.8, mouthFunnel: 0.3 }); near(w.ou, 0.8); near(w.oh, 0.2);
+});
+test('Smooth 노드 (SmoothDamp): 0.2초 뒤 대부분 따라감, 0이면 즉시', () => {
+  const b = new WD.SmoothBank(); b.run('a', 0, 0.2, 0.016); let x = 0; for (let i = 0; i < 25; i++) x = b.run('a', 1, 0.2, 0.016);
+  assert.ok(x > 0.85 && x <= 1.0001, String(x)); near(new WD.SmoothBank().run('z', 0.7, 0, 0.016), 0.7);
+});
+test('Switch (real: InOutSine): 0.4초 전환', () => { const s = new WD.Switch(0); s.set(true, 0); near(s.update(0.2, 0.4), 0.5); near(s.update(0.4, 0.4), 1); s.set(false, 1); near(s.update(1.4, 0.4), 0); });
 test('ARKit 자동 감지', () => { assert.equal(WD.detectMapping(['aa', 'happy']).type, 'VRM'); assert.equal(WD.detectMapping(WD.ARKIT).type, 'ARKit'); });
 test('Look At clamp: 0이면 그대로, 1이면 0, 사이면 줄어듦', () => { near(WD.clampLookAngle(40, 0), 40); near(WD.clampLookAngle(40, 1), 0); near(WD.clampLookAngle(40, 0.7), 40); const v = WD.clampLookAngle(100, 0.7); assert.ok(v > 0 && v < 100, String(v)); });
 test('씬 가져오기: SDK 직렬화 구조(assets[].dataInputs[키].value)', () => {
@@ -77,6 +105,28 @@ test('씬 가져오기: SDK 직렬화 구조(assets[].dataInputs[키].value)', (
   assert.equal(r.settings.LookAtEnabled, true); near(r.settings.LookAtClampHeadWeight, 0.3); assert.equal(r.settings.FieldOfView, 40);
   assert.equal(r.mapping[0].BlendShape, 'jawOpen'); near(r.mapping[0].TargetValueMin, -0.25);
   assert.equal(r.expressions[0].Name, 'Joy'); assert.equal(r.expressions[0].IsBinary, true);
+});
+test('real 형식: enum은 {label,value}, 다른 노드에서 연결된 입력은 가져오지 않음, 키 바인딩', () => {
+  const di = (o) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, { type: 'x', typeKind: 'Value', defaultValue: null, value: v, properties: {}, key: k }]));
+  const scene = { name: 'S', appVersion: '0.15.1', assets: [{ typeId: WD.MEDIAPIPE_TRACKER_TYPE_ID, name: 'MediaPipe Tracker', id: 't', dataInputs: di({ BodyRotationType: '{"label":"Normal","value":1,"description":null,"icon":null}', InputCameraName: '"cam"' }) }],
+    graphs: [{ name: 'G', nodes: {
+      n1: { typeId: 'x', name: 'CHARACTER_LOOK_AT_TARGET', dataInputs: di({ Weight: '0.0', HeadWeight: '0.5' }) },
+      k1: { typeId: 'k', name: 'ON_KEYSTROKE_PRESSED', dataInputs: di({ Keystroke: '{"label":"1","value":2}', RequireCtrl: 'false', RequireShift: 'false', RequireAlt: 'true', RequireMeta: 'false' }) },
+      t1: { typeId: 't', name: 'TOGGLE_CHARACTER_EXPRESSION', dataInputs: di({ Expression: '"happy"', Action: '{"label":"Toggle","value":0}' }) } },
+      dataConnections: [{ outputNode: 'z', outputPort: 'Output', inputNode: 'n1', inputPort: 'Weight' }], flowConnections: [{ outputNode: 'k1', outputPort: 'Exit', inputNode: 't1', inputPort: 'Enter' }] }] };
+  const r = WD.importWarudoJSON(scene);
+  assert.equal(r.settings.BodyRotationType, 'Normal'); assert.equal('LookAtNodeWeight' in r.settings, false); near(r.settings.LookAtNodeHeadWeight, 0.5);
+  assert.deepEqual(r.hotkeys, [{ key: 'Alt+1', expression: 'happy', action: 'Toggle' }]);
+  assert.ok(r.report.totals.connected >= 1); assert.ok(r.report.assets[0].notApplicable.includes('InputCameraName'));
+});
+// 실제 씬 파일 (개인 자료라 저장소에 없음 → 있으면만 검사)
+const REAL = new URL('../../vrm-vtuber-ref/warudo-data/Avatar_MediaPipe_Reference.json', import.meta.url);
+test('real 씬 파일 가져오기 (있을 때만)', { skip: !fs.existsSync(REAL) }, () => {
+  const r = WD.importWarudoJSON(JSON.parse(fs.readFileSync(REAL, 'utf8').replace(/^\uFEFF/, '')));
+  assert.equal(r.kind, 'scene'); assert.equal(r.mapping.length, 52); assert.equal(r.expressions.length, 23); assert.equal(r.hotkeys.length, 24);
+  assert.equal(r.settings.BodyRotationType, 'Inverted'); assert.equal(r.settings.ConvertToVRMEyeBlendShapes, true); assert.equal(r.settings.BlendShapeSmoothTime, 0.2); assert.equal(r.settings.LipSync, 'Disabled');
+  for (const k of Object.keys(r.settings)) if (k in WD.DEFAULTS && k !== 'BlendShapeMappingType') assert.deepEqual(r.settings[k], WD.DEFAULTS[k], k); // 기본값 = 실제 씬 값
+  assert.deepEqual(WD.defaultMapping(), r.mapping.map(m => ({ ...m })).sort((a, b) => WD.ARKIT.indexOf(a.BlendShape) - WD.ARKIT.indexOf(b.BlendShape)));
 });
 test('모르는 JSON → 안내 메모', () => { const r = WD.importWarudoJSON({ foo: 1 }); assert.equal(r.found.length, 0); assert.ok(r.notes.length); });
 test('우리 내보내기 형식 왕복', () => { const r = WD.importWarudoJSON({ format: 'vrm-vtuber-warudo', settings: { EyeBlinkSensitivity: 0.9, BodyRotationType: 'None' } }); assert.equal(r.settings.EyeBlinkSensitivity, 0.9); assert.equal(r.settings.BodyRotationType, 'None'); });

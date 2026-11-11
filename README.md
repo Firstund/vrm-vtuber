@@ -16,6 +16,19 @@ python3 -m http.server 8765
 - 기본: `assets/FirstundHoodieBoy_v2_VRM0.vrm` (VRM 0.x)
 - **📂 VRM 불러오기** 또는 화면에 `.vrm` 파일을 끌어다 놓기 → VRM 0.x / 1.0 모두 지원. 마지막으로 고른 아바타는 기기 안(IndexedDB)에 기억합니다. **기본 아바타** 버튼으로 되돌리기.
 - 주소에 `?vrm=경로.vrm` 로 같은 폴더의 다른 파일을 열 수도 있어요. `?default=1` 은 기억한 아바타 무시.
+- 로컬 테스트용 개인 아바타: `assets-local/`에 넣으면(`assets-local/avatar.vrm`) 그 파일이 있을 때만 버튼이 생겨요. 이 폴더는 `.gitignore`로 저장소·배포에서 빠져요.
+
+## v3: 실제 Warudo 자료로 맞춤
+실제 Warudo 0.15.1 씬 파일(VRM 1.0 아바타 + MediaPipe, 온보딩 기본값)로 확인한 값으로 바꿨어요. v2는 git 태그 `v2`.
+- MediaPipe 초기 매핑: eyeBlink 입력 0.3~0.7, jawOpen·mouthFunnel·mouthPucker 출력 −0.15~1 (실측)
+- VRM 입 모양·깜빡임·시선: 실제 Warudo Blueprint 공식 그대로 (aa = jaw×1.2 − funnel, oh = funnel×3 + lowerDown×0.5, ih = smile×2×jaw, ou = pucker, ee 안 씀, 제약 4개)
+- 부드럽게: Warudo 그래프 값(표정 0.2초, 회전·위치 0.6초) 기본, 이전 방식은 "부드럽게 방식"에서 선택
+- 추적이 끊기면 0.4초/2초 InOutSine 전환, 대기 동작(깜빡임 1~10초 등) 실측 값
+- 표정: VRM 1.0 이름 그대로, override로 Disable 플래그, 단축키 Alt+1…0 - = Q…P [ / Alt+Backspace (Warudo 온보딩과 같음)
+- 립싱크 기본 끔 (실제 씬에 립싱크 노드 없음)
+- Warudo 씬 가져오기: 실제 형식(enum 객체, 중첩 JSON, 노드 연결) 지원, 가져온 수 / 해당 없음 / 모름 보고
+- 설정 옆 표시 **실측** = 실제 Warudo 씬 값과 같음. 남은 추정 항목은 [`docs/warudo-settings.md`](docs/warudo-settings.md) 끝에 정리
+- 테스트: `python3 tools/tools_v3.py` (실제 씬 파일 `WARUDO_SCENE` 경로가 있으면 가져오기도 검사)
 
 ## v2: Warudo 설정 호환
 설정 이름·기본값·단위를 3D 버튜버 프로그램 **Warudo**에 맞췄어요(설정마다 한국어 + 작은 영어 Warudo 이름, 근거 표시: 문서 / SDK / 추정 / 전용).
@@ -24,18 +37,17 @@ python3 -m http.server 8765
 - **얼굴 추적 Blueprint 옵션**: BlendShape Mapping(자동/VRM/ARKit), 머리·몸 움직임, Idle Head Animation(자동 깜빡임·눈·머리), Look At, Lip Sync(끔/추적 끊길 때만/항상)
 - **Character**: 표정(레이어, 0.4초 페이드, Is Binary, Trigger Conditions, Disable Eye Blink/Mouth/Brow Tracking), Look At IK, Breathing/Swaying
 - **Camera**: Field Of View 35, 투명 배경, 크로마키, Brightness/Contrast/Vibrance
-- **설정 파일**: 💾 내보내기(JSON) · 📥 가져오기(우리 JSON 또는 Warudo 씬 .json — 같은 이름의 값을 찾아서 가져옴, 실제 씬 파일 검증 전)
-- 표정 단축키: 1 모두 끄기 · 2~9 표정 켜기/끄기 (Alt+숫자도 됨)
+- **설정 파일**: 💾 내보내기(JSON) · 📥 가져오기(우리 JSON 또는 Warudo 씬 .json)
 - Warudo에 없는 기능(One-Euro 부드러움, 표정 자동 인식, 신남 감지, 팔 내림, 조명, 카메라 구도)은 "우리 전용"으로 따로 둠. 표정 자동 인식은 Warudo 기본에 없어서 기본 꺼짐.
 - 테스트: `node --test tests/warudo.test.mjs` (매핑 공식 등 단위 테스트), `python3 tools/tools_v2.py` (헤드리스 브라우저)
 
 ## 마이크 (선택)
 **🎤 마이크 켜기**: 픽셀 버전과 같은 신남 감지(음량·음높이·변동) + 음량 립싱크.
-- 립싱크 (Warudo Lip Sync): 끔 / 추적 끊길 때만(기본) / 항상
+- 립싱크 (Warudo Lip Sync): 끔(기본, 실제 Warudo 씬과 같음) / 추적 끊길 때만 / 항상
 - 신나면 통통 튀기, 신나면 웃음 표정
 
 ## 단축키 · 주소 옵션
-- 1 표정 끄기 · 2~9 표정 · h 클린 뷰 · Esc/더블탭 해제
+- 표정: Alt+1…0, Alt+- = Q W E R T Y U I O P [ (숫자·-·=는 Alt 없이도) · Backspace 모두 끄기 · h 클린 뷰 · Esc/더블탭 해제
 - 마우스 휠/두 손가락으로 확대, 휴대폰은 ⚙ 버튼으로 설정 창 접기
 - `?demo=1` 카메라 없이 동작 순환 · `?clean=1` 클린 뷰 · `?bg=00ff00` 배경색(크로마키) · `?bg=transparent` 투명 · `?mirror=1` Mirrored Tracking 켜기 · `?ws=…` 설정 묶음(OBS 주소 복사 시 자동) · `?frame=full` 전신 · `?zoom=1.3&y=0.1&x=0&rot=10` 카메라 · `?autostart=1` 카메라 자동 시작 · `?obs=1` OBS용(클린+투명)
 

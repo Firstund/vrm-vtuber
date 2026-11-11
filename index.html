@@ -1,6 +1,6 @@
 <!doctype html><html lang="ko"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>3D VTuber (VRM)</title><link rel="icon" href="data:,"><link rel="stylesheet" href="style.css?v=3">
+<title>3D VTuber (VRM)</title><link rel="icon" href="data:,"><link rel="stylesheet" href="style.css?v=4">
 <script type="importmap">{"imports":{"three":"./lib/three/three.module.js","three/addons/":"./lib/three/addons/","@pixiv/three-vrm":"./lib/three-vrm/three-vrm.module.min.js"}}</script>
 </head><body>
 <div id="stage"><canvas id="c"></canvas><div id="drop" hidden>여기에 .vrm 파일을 놓으세요</div></div>
@@ -15,7 +15,7 @@
  <div class="hint" id="avatarName">아바타: -</div>
  <div class="row"><label class="filebtn">📂 VRM 불러오기<input type="file" id="vrmFile" accept=".vrm,model/gltf-binary,application/octet-stream" hidden></label><button id="vrmDefault">기본 아바타</button></div>
  <p class="hint">.vrm 파일을 화면에 끌어다 놓아도 돼요 (VRM 0.x / 1.0). 파일은 이 기기 안에만 저장돼요.</p>
- <div class="hint">표정 (키 1~9)</div>
+ <div class="hint">표정 (Warudo처럼 Alt+1…0 - = Q…P [ , 모두 끄기 Alt+Backspace)</div>
  <div id="expr" class="row"></div>
 
  <div id="wpanel"></div>
@@ -36,9 +36,9 @@
  <details id="fileSec"><summary>설정 파일 · Warudo 가져오기</summary>
   <div class="row"><button id="exportBtn">💾 설정 내보내기 (JSON)</button><label class="filebtn">📥 설정/Warudo 씬 가져오기<input type="file" id="importFile" accept=".json,application/json" hidden></label></div>
   <button id="resetW">Warudo 기본값으로 되돌리기</button>
-  <p class="hint">Warudo 씬 파일(.json)을 넣으면 같은 이름의 설정값을 찾아서 가져와요. 아직 실제 씬 파일로 검증되지 않았어요.</p>
+  <p class="hint">Warudo 씬 파일(.json, Warudo 데이터 폴더의 Scenes 안)을 넣으면 트래커·캐릭터·카메라 설정, 블렌드쉐이프 매핑, 표정, 표정 단축키, 얼굴 추적 Blueprint 값을 가져와요. 실제 Warudo 0.15.1 씬 파일로 확인했어요.</p>
   <pre id="importMsg" class="hint" hidden></pre>
  </details>
- <p class="hint">단축키: 1 표정 끄기 · 2~9 표정 (Alt+숫자도 됨) · h 클린 뷰 · Esc/더블탭 해제<br>이름 옆 작은 영어는 Warudo 설정 이름이에요. 표시: <b class="src doc">문서</b> 공식 문서 · <b class="src sdk">SDK</b> Warudo SDK 기본값 · <b class="src inferred">추정</b> · <b class="src ours">전용</b> Warudo에 없음<br>영상·음성은 이 브라우저 안에서만 처리되고 어디에도 전송되지 않아요.</p>
+ <p class="hint">단축키: Alt+1…0, Alt+- = Q W E R T Y U I O P [ 표정 (Warudo 온보딩과 같음, 숫자·-·=는 Alt 없이도) · Backspace 모두 끄기 · h 클린 뷰 · Esc/더블탭 해제<br>이름 옆 작은 영어는 Warudo 설정 이름이에요. 표시: <b class="src real">실측</b> 실제 Warudo 씬 파일로 확인 · <b class="src doc">문서</b> 공식 문서 · <b class="src sdk">SDK</b> Warudo SDK 기본값 · <b class="src inferred">추정</b> · <b class="src ours">전용</b> Warudo에 없음<br>영상·음성은 이 브라우저 안에서만 처리되고 어디에도 전송되지 않아요.</p>
 </div>
-<script type="module" src="js/app.js?v=2"></script></body></html>
+<script type="module" src="js/app.js?v=3"></script></body></html>

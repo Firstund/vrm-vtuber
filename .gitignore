@@ -1,0 +1,4 @@
+# 로컬 테스트 전용 (개인 아바타 등) — 절대 커밋하지 않음
+assets-local/
+*.vrm.local
+screens/*-local-*

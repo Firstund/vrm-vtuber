@@ -40,7 +40,7 @@ body.clean #panel,body.clean #hud,body.clean #video,body.clean #panelToggle{disp
 .w .ctl .vec{display:flex;gap:4px;flex:1}.w .ctl .vec label{display:flex;gap:2px;font-size:11px;opacity:.9;flex:1}.w .ctl .vec input{width:100%;min-width:0}
 .w.bool .lab{cursor:pointer}
 .src{font-size:9.5px;font-weight:600;padding:1px 5px;border-radius:6px;background:#555;opacity:.9}
-.src.doc{background:#2e7d32}.src.sdk{background:#1565c0}.src.inferred{background:#b26a00}.src.ours{background:#6a4a7a}
+.src.real{background:#00897b}.src.doc{background:#2e7d32}.src.sdk{background:#1565c0}.src.inferred{background:#b26a00}.src.ours{background:#6a4a7a}
 .wsec>summary small{font-weight:400;opacity:.6}
 .maptab{width:100%;border-collapse:collapse;font-size:11.5px}.maptab td{padding:1px 2px}.maptab input{width:46px;font:11px monospace;padding:2px;border:0;border-radius:4px}
 .maptab td:first-child{max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -48,3 +48,4 @@ body.clean #panel,body.clean #hud,body.clean #video,body.clean #panelToggle{disp
 .exprbox .r{display:flex;flex-wrap:wrap;gap:6px;align-items:center}.exprbox input[type=number]{width:52px}.exprbox input[type=text]{flex:1;min-width:160px;font:12px monospace;padding:4px;border-radius:4px;border:0}
 #importMsg{white-space:pre-wrap;background:#0004;padding:6px;border-radius:6px;max-height:220px;overflow:auto}
 .w[hidden]{display:none!important}
+#expr small{opacity:.6;font-size:10px}
