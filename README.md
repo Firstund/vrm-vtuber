@@ -17,21 +17,27 @@ python3 -m http.server 8765
 - **📂 VRM 불러오기** 또는 화면에 `.vrm` 파일을 끌어다 놓기 → VRM 0.x / 1.0 모두 지원. 마지막으로 고른 아바타는 기기 안(IndexedDB)에 기억합니다. **기본 아바타** 버튼으로 되돌리기.
 - 주소에 `?vrm=경로.vrm` 로 같은 폴더의 다른 파일을 열 수도 있어요. `?default=1` 은 기억한 아바타 무시.
 
-## 추적 (MediaPipe FaceLandmarker)
-- 고개 좌우·위아래·기울기 → 머리·목 + 상체가 조금 따라옴(**몸 따라오기**). 몸을 옆으로 옮기면 상체가 살짝 기울어요.
-- 눈 깜빡임 좌우 따로(윙크), 눈동자 시선, 입 모양 아·이·우·에·오(jawOpen/funnel/pucker/smile/stretch 조합), 웃음·화남·슬픔·놀람·즐거움 자동 인식.
-- One-Euro 필터 + 화면 프레임 보간으로 끊김 없이 부드럽게. **부드러움**(떨림↔반응), **빠른 움직임 반응**, **고개/입 감도**, **눈 감김 기준**, **시선 세기**, **감정 감도** 슬라이더.
-- 얼굴을 놓치면 천천히 정면으로 돌아오고 자동 깜빡임·숨쉬기·살짝 흔들림이 이어집니다. 팔은 T포즈에서 편하게 내림(**팔 내림** 슬라이더).
+## v2: Warudo 설정 호환
+설정 이름·기본값·단위를 3D 버튜버 프로그램 **Warudo**에 맞췄어요(설정마다 한국어 + 작은 영어 Warudo 이름, 근거 표시: 문서 / SDK / 추정 / 전용).
+자세한 대응표와 근거: [`docs/warudo-settings.md`](docs/warudo-settings.md). v1은 git 태그 `v1`에 그대로 있어요.
+- **얼굴 추적 에셋 (MediaPipe Tracker)**: Mirrored Tracking, BlendShape Sensitivity, 개별 블렌드쉐이프 매핑(입력 범위 → 출력 범위), Head Movement/Rotation Intensity, Body Movement Intensity, Body Rotation Type(None/Normal/Inverted/Custom), Eye Movement Intensity, Eye Blink Sensitivity, Linked Eye Blinking 등
+- **얼굴 추적 Blueprint 옵션**: BlendShape Mapping(자동/VRM/ARKit), 머리·몸 움직임, Idle Head Animation(자동 깜빡임·눈·머리), Look At, Lip Sync(끔/추적 끊길 때만/항상)
+- **Character**: 표정(레이어, 0.4초 페이드, Is Binary, Trigger Conditions, Disable Eye Blink/Mouth/Brow Tracking), Look At IK, Breathing/Swaying
+- **Camera**: Field Of View 35, 투명 배경, 크로마키, Brightness/Contrast/Vibrance
+- **설정 파일**: 💾 내보내기(JSON) · 📥 가져오기(우리 JSON 또는 Warudo 씬 .json — 같은 이름의 값을 찾아서 가져옴, 실제 씬 파일 검증 전)
+- 표정 단축키: 1 모두 끄기 · 2~9 표정 켜기/끄기 (Alt+숫자도 됨)
+- Warudo에 없는 기능(One-Euro 부드러움, 표정 자동 인식, 신남 감지, 팔 내림, 조명, 카메라 구도)은 "우리 전용"으로 따로 둠. 표정 자동 인식은 Warudo 기본에 없어서 기본 꺼짐.
+- 테스트: `node --test tests/warudo.test.mjs` (매핑 공식 등 단위 테스트), `python3 tools/tools_v2.py` (헤드리스 브라우저)
 
 ## 마이크 (선택)
 **🎤 마이크 켜기**: 픽셀 버전과 같은 신남 감지(음량·음높이·변동) + 음량 립싱크.
-- 립싱크: 끔 / 얼굴 인식 안 될 때만(기본) / 항상 보강
+- 립싱크 (Warudo Lip Sync): 끔 / 추적 끊길 때만(기본) / 항상
 - 신나면 통통 튀기, 신나면 웃음 표정
 
 ## 단축키 · 주소 옵션
-- 1 자동 · 2 웃음 · 3 화남 · 4 슬픔 · 5 즐거움 · 6 놀람(아바타에 있을 때) · h 클린 뷰 · Esc/더블탭 해제
+- 1 표정 끄기 · 2~9 표정 · h 클린 뷰 · Esc/더블탭 해제
 - 마우스 휠/두 손가락으로 확대, 휴대폰은 ⚙ 버튼으로 설정 창 접기
-- `?demo=1` 카메라 없이 동작 순환 · `?clean=1` 클린 뷰 · `?bg=00ff00` 배경색(크로마키) · `?bg=transparent` 투명 · `?mirror=0` 거울 끄기 · `?frame=full` 전신 · `?zoom=1.3&y=0.1&x=0&rot=10` 카메라 · `?autostart=1` 카메라 자동 시작 · `?obs=1` OBS용(클린+투명)
+- `?demo=1` 카메라 없이 동작 순환 · `?clean=1` 클린 뷰 · `?bg=00ff00` 배경색(크로마키) · `?bg=transparent` 투명 · `?mirror=1` Mirrored Tracking 켜기 · `?ws=…` 설정 묶음(OBS 주소 복사 시 자동) · `?frame=full` 전신 · `?zoom=1.3&y=0.1&x=0&rot=10` 카메라 · `?autostart=1` 카메라 자동 시작 · `?obs=1` OBS용(클린+투명)
 
 ## OBS에서 쓰기
 1. 위처럼 로컬 서버를 켜고 브라우저에서 화면·카메라 설정을 맞춘 뒤 **📋 OBS 브라우저 소스 주소 복사**
@@ -40,6 +46,6 @@ python3 -m http.server 8765
 ※ 다른 프로그램(OBS 등)이 카메라를 쓰고 있으면 브라우저에서 카메라가 안 열릴 수 있어요.
 
 ## 구성
-- `index.html`, `style.css`, `js/app.js`(아바타·추적 매핑·UI), `js/tracker.js`(MediaPipe), `js/filter.js`(One-Euro), `js/mic.js`(픽셀 버전 기반 + 립싱크 음량)
+- `index.html`, `style.css`, `js/app.js`(아바타·추적·UI), `js/warudo.js`(Warudo 호환 공식·설정 스키마·씬 가져오기), `js/tracker.js`(MediaPipe), `js/filter.js`(One-Euro), `js/mic.js`(픽셀 버전 기반 + 립싱크 음량)
 - `lib/` three.js 0.187.0, @pixiv/three-vrm 3.5.5, @mediapipe/tasks-vision 0.10.14 (각 라이선스 포함) · `models/face_landmarker.task`
-- `tools/` 헤드리스 테스트 스크립트(playwright) · `screens/` 확인용 스크린샷
+- `tools/` 헤드리스 테스트 스크립트(playwright) · `tests/` 단위 테스트 · `screens/` 확인용 스크린샷(v1은 `screens/v1/`) · `docs/` Warudo 대응표

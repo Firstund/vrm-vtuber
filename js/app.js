@@ -1,53 +1,126 @@
-// 3D VTuber (VRM) — three.js + @pixiv/three-vrm + MediaPipe FaceLandmarker. 모든 처리는 브라우저 안에서만.
+// 3D VTuber (VRM) v2 — Warudo 설정 호환. three.js + @pixiv/three-vrm + MediaPipe FaceLandmarker. 모든 처리는 브라우저 안에서만.
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
 import { FilterBank } from './filter.js';
 import { loadTracker, detect, tracker } from './tracker.js';
 import { mic, startMic, micTick } from './mic.js';
+import * as WD from './warudo.js';
 
 const $ = id => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 const DEFAULT_VRM = 'assets/FirstundHoodieBoy_v2_VRM0.vrm';
-const D2R = Math.PI / 180;
+const D2R = Math.PI / 180, R2D = 180 / Math.PI;
 const clamp01 = v => Math.max(0, Math.min(1, v));
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const lerp = (a, b, k) => a + (b - a) * k;
 const smoothstep = v => { v = clamp01(v); return v * v * (3 - 2 * v); };
-const VV = window.__vv = { errors: [], loaded: false, frames: 0 };
+const VV = window.__vv = { errors: [], loaded: false, frames: 0, WD };
 window.addEventListener('error', e => VV.errors.push(String(e.message)));
 window.addEventListener('unhandledrejection', e => VV.errors.push(String(e.reason?.message || e.reason)));
 
-// ---------- 설정 (localStorage 저장) ----------
-const PS = (() => { try { return JSON.parse(localStorage.getItem('vv_settings') || '{}'); } catch { return {}; } })();
-const savePS = () => { try { localStorage.setItem('vv_settings', JSON.stringify(PS)); } catch {} };
-const cfg = {};
-const SLIDERS = ['smooth', 'beta', 'headSens', 'bodyFollow', 'mouthSens', 'blinkTh', 'gaze', 'emoSens', 'armDown', 'micSens', 'zoom', 'camY', 'camX', 'camRot', 'light', 'lightDir'];
-for (const id of SLIDERS) {
-  const el = $(id), out = el.nextElementSibling;
-  if (id in PS) el.value = PS[id];
-  const upd = (save) => { cfg[id] = parseFloat(el.value); if (out) out.textContent = el.value; if (save) { PS[id] = cfg[id]; savePS(); } onCfg(id); };
-  el.addEventListener('input', () => upd(true)); cfg[id] = parseFloat(el.value); if (out) out.textContent = el.value;
-}
-const CHECKS = ['wink', 'autoEmo', 'mirror', 'autoBlink', 'breath', 'micBounce', 'micExpr', 'preview'];
-for (const id of CHECKS) {
-  const el = $(id); if (id in PS) el.checked = PS[id];
-  if (params.get(id) === '0') el.checked = false; if (params.get(id) === '1') el.checked = true;
-  cfg[id] = el.checked; el.onchange = () => { cfg[id] = el.checked; PS[id] = cfg[id]; savePS(); onCfg(id); };
-}
-$('lipMode').value = PS.lipMode || 'fallback'; cfg.lipMode = $('lipMode').value;
-$('lipMode').onchange = e => { cfg.lipMode = PS.lipMode = e.target.value; savePS(); };
-cfg.frame = params.get('frame') || PS.frame || 'bust';
-function onCfg(id) {
-  if (id === 'mirror') document.body.classList.toggle('mirror', cfg.mirror);
-  if (id === 'preview') document.body.classList.toggle('preview', cfg.preview);
-  if (['zoom', 'camY', 'camX', 'camRot'].includes(id)) frameCamera();
-  if (id === 'light' || id === 'lightDir') applyLight();
-}
-document.body.classList.toggle('mirror', cfg.mirror);
-document.body.classList.toggle('preview', cfg.preview);
+// ---------- 저장 ----------
+const LS = { get: (k, d) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } }, set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} } };
+const PS = LS.get('vv_settings', {}); // v1 설정(카메라 구도·보정)
+const savePS = () => LS.set('vv_settings', PS);
+const SCH = Object.fromEntries(WD.SCHEMA.map(s => [s.key, s]));
+const W = { ...structuredClone(WD.DEFAULTS), ...LS.get('vv_warudo', {}) }; // Warudo 호환 설정
+let MAP = LS.get('vv_warudo_map', null) || WD.defaultMapping();
+let MAPI = {}; const reindexMap = () => { MAPI = {}; for (const m of MAP) MAPI[m.BlendShape] = m; };
+reindexMap();
+// OBS 등 다른 브라우저용: ?ws=base64(JSON)
+const b64e = s => btoa(unescape(encodeURIComponent(s))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const b64d = s => decodeURIComponent(escape(atob(s.replace(/-/g, '+').replace(/_/g, '/'))));
+if (params.get('ws')) { try { const j = JSON.parse(b64d(params.get('ws'))); Object.assign(W, j.s || {}); if (j.m) { MAP = WD.defaultMapping(); for (const m of j.m) { const i = MAP.findIndex(x => x.BlendShape === m.BlendShape); if (i >= 0) MAP[i] = m; } reindexMap(); } if (j.e) VV.urlExpr = j.e; } catch (e) { console.warn('ws 파라미터 오류', e); } }
+if (params.get('mirror') === '1') W.MirroredTracking = true; if (params.get('mirror') === '0') W.MirroredTracking = false;
+const saveW = () => { LS.set('vv_warudo', W); LS.set('vv_warudo_map', MAP); };
+VV.W = W; VV.MAP = () => MAP;
+
 const status = s => { $('status').textContent = s; VV.status = s; };
 const showErr = s => { const e = $('err'); e.hidden = !s; e.textContent = s || ''; };
+
+// ---------- 설정 UI (스키마로 생성) ----------
+const SRC_LABEL = { doc: '문서', sdk: 'SDK', inferred: '추정', ours: '전용' };
+const SECS = [
+  ['tracker', 'MediaPipe Tracker', '얼굴 추적 에셋'],
+  ['bp', 'Face Tracking Blueprint', '얼굴 추적 설정 (온보딩)'],
+  ['look', 'Look At (Character Look At Target)', '카메라 눈맞춤'],
+  ['char', 'Character', '캐릭터 에셋'],
+  ['cam', 'Camera', '카메라 에셋'],
+  ['ours', 'extras', '우리 전용 (Warudo에 없음)'],
+];
+const ui = {}; // key -> setter(v)
+function el(tag, attrs = {}, ...kids) { const e = document.createElement(tag); for (const [k, v] of Object.entries(attrs)) { if (k === 'class') e.className = v; else if (k in e && typeof v !== 'string') e[k] = v; else e.setAttribute(k, v); } for (const k of kids) if (k != null) e.append(k); return e; }
+function numCtl(s, get, set) {
+  const r = el('input', { type: 'range', min: s.min, max: s.max, step: s.step }); const n = el('input', { type: 'number', step: s.step });
+  const show = v => { r.value = v; n.value = +(+v).toFixed(4); };
+  r.oninput = () => { set(+r.value); n.value = r.value; }; n.onchange = () => { if (n.value === '' || !isFinite(+n.value)) return show(get()); set(+n.value); r.value = n.value; };
+  show(get()); return [el('span', { class: 'ctl' }, r, n), show];
+}
+function buildSetting(s) {
+  const lab = el('span', { class: 'lab' }, s.ko, el('small', {}, s.en), el('b', { class: 'src ' + s.src, title: s.src }, SRC_LABEL[s.src]));
+  const set = v => { W[s.key] = v; saveW(); onW(s.key); };
+  let row, show;
+  if (s.type === 'bool') {
+    const c = el('input', { type: 'checkbox' }); c.checked = !!W[s.key]; c.onchange = () => set(c.checked);
+    show = v => { c.checked = !!v; }; row = el('label', { class: 'w bool' }, el('span', { class: 'lab' }, c, ...lab.childNodes));
+  } else if (s.type === 'num') {
+    const [ctl, sh] = numCtl(s, () => W[s.key], set); show = sh; row = el('div', { class: 'w' }, lab, ctl);
+  } else if (s.type === 'vec3' || s.type === 'vec2') {
+    const axes = s.type === 'vec3' ? ['X', 'Y', 'Z'] : ['X', 'Y']; const ins = [];
+    const box = el('span', { class: 'vec' }, ...axes.map((a, i) => { const n = el('input', { type: 'number', step: s.step, min: s.min, max: s.max }); n.onchange = () => { if (!isFinite(+n.value) || n.value === '') return show(W[s.key]); const v = [...W[s.key]]; v[i] = +n.value; set(v); }; ins.push(n); return el('label', {}, a, n); }));
+    show = v => ins.forEach((n, i) => { n.value = v[i]; }); show(W[s.key]); row = el('div', { class: 'w' }, lab, el('span', { class: 'ctl' }, box));
+  } else if (s.type === 'enum') {
+    const sel = el('select'); for (const [v, k] of s.opts) sel.append(el('option', { value: v }, `${k} (${v})`)); sel.value = W[s.key]; sel.onchange = () => set(sel.value);
+    show = v => { sel.value = v; }; row = el('div', { class: 'w' }, lab, el('span', { class: 'ctl' }, sel));
+  } else if (s.type === 'color') {
+    const c = el('input', { type: 'color' }); c.value = W[s.key]; c.oninput = () => set(c.value); show = v => { c.value = v; }; row = el('div', { class: 'w' }, lab, el('span', { class: 'ctl' }, c));
+  }
+  ui[s.key] = show; return row;
+}
+const SEC_EL = {};
+for (const [id, en, ko] of SECS) {
+  const d = el('details', { class: 'wsec', id: 'sec-' + id }, el('summary', {}, ko + ' ', el('small', {}, en)));
+  if (id === 'tracker') d.open = true;
+  for (const s of WD.SCHEMA) if (s.sec === id) {
+    if (s.key === 'BodyRotationIntensity' || s.key === 'BodyRotationDirection') { const r = buildSetting(s); r.dataset.key = s.key; d.append(r); continue; }
+    d.append(buildSetting(s));
+  }
+  SEC_EL[id] = d; $('wpanel').append(d);
+}
+// Configure BlendShapes Mapping 표
+const mapDet = el('details', { id: 'mapSec' }, el('summary', {}, '개별 블렌드쉐이프 매핑 ', el('small', {}, 'Configure BlendShapes Mapping')));
+mapDet.append(el('p', { class: 'hint' }, '입력 최소~최대(추적값) → 출력 최소~최대(캐릭터). 예: 입력 0~1, 출력 0~2면 0.40 → 0.80. 끄려면 출력 최대를 0, 더 늦게 반응하려면 출력 최소를 -0.25처럼 음수로. eyeBlink 두 줄(0.25~0.8)은 Warudo MediaPipe 실제 값을 몰라서 넣은 임시값이에요.'));
+const mapTab = el('table', { class: 'maptab' }); mapDet.append(mapTab);
+let mapBuilt = false;
+function buildMapTable() {
+  mapTab.innerHTML = ''; mapTab.append(el('tr', {}, el('td', {}, '이름'), el('td', {}, '입력최소'), el('td', {}, '입력최대'), el('td', {}, '출력최소'), el('td', {}, '출력최대')));
+  for (const m of MAP) {
+    const tr = el('tr', {}, el('td', { title: m.BlendShape }, m.BlendShape));
+    for (const k of ['SourceValueMin', 'SourceValueMax', 'TargetValueMin', 'TargetValueMax']) { const n = el('input', { type: 'number', step: 0.05 }); n.value = m[k]; n.onchange = () => { if (isFinite(+n.value) && n.value !== '') { m[k] = +n.value; saveW(); } else n.value = m[k]; }; tr.append(el('td', {}, n)); }
+    mapTab.append(tr);
+  }
+  mapBuilt = true;
+}
+mapDet.addEventListener('toggle', () => { if (mapDet.open && !mapBuilt) buildMapTable(); });
+const mapReset = el('button', {}, '매핑 초기화'); mapReset.onclick = () => { MAP = WD.defaultMapping(); reindexMap(); saveW(); buildMapTable(); }; mapDet.append(mapReset);
+SEC_EL.tracker.append(mapDet);
+// 표정 편집
+const exprDet = el('details', { id: 'exprSec' }, el('summary', {}, '표정 설정 ', el('small', {}, 'Expressions')));
+exprDet.append(el('p', { class: 'hint' }, '같은 레이어(Layer) 표정끼리는 바뀔 때 페이드아웃되고, 다른 레이어는 겹쳐요. 기본 페이드 0.4초. 조건 예: mouthSmileLeft>=0.5 & mouthSmileRight>=0.5 (| 로 여러 묶음)'));
+const exprList = el('div', { class: 'col' }); exprDet.append(exprList);
+SEC_EL.char.querySelector('summary').after(exprDet);
+function onW(key) {
+  if (key === 'BodyRotationType' || !key) for (const r of SEC_EL.tracker.querySelectorAll('[data-key]')) r.hidden = (r.dataset.key === 'BodyRotationIntensity') ? !(W.BodyRotationType === 'Normal' || W.BodyRotationType === 'Inverted') : W.BodyRotationType !== 'Custom';
+  if (key === 'preview' || !key) document.body.classList.toggle('preview', W.preview);
+  if (key === 'MirroredTracking' || !key) document.body.classList.toggle('mirror', !W.MirroredTracking);
+  if (key === 'FieldOfView' || !key) { camera.fov = W.FieldOfView; camera.updateProjectionMatrix(); frameCamera(); }
+  if (key === 'light' || key === 'lightDir' || !key) applyLight();
+  if (['Brightness', 'Contrast', 'Vibrance'].includes(key) || !key) canvas.style.filter = `brightness(${W.Brightness}) contrast(${W.Contrast}) saturate(${(1 + 0.15 * W.Vibrance).toFixed(3)})`;
+  if (key === 'TransparentBackground' || key === 'ChromaKeyColor' || !key) applyBg();
+  if (key === 'smooth' || key === 'beta' || !key) updFilter();
+}
+function refreshUI() { for (const k in ui) ui[k](W[k]); if (mapBuilt) buildMapTable(); onW(); }
 
 // ---------- three.js ----------
 const canvas = $('c');
@@ -56,29 +129,49 @@ renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.setClearColor(0x000000, 0);
 const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(30, 1, 0.05, 50);
+const camera = new THREE.PerspectiveCamera(W.FieldOfView, 1, 0.05, 50); // Unity와 같이 세로 시야각
 const dirLight = new THREE.DirectionalLight(0xffffff, Math.PI);
 const ambLight = new THREE.AmbientLight(0xffffff, 0.6);
 scene.add(dirLight, ambLight, dirLight.target);
-function applyLight() {
-  const a = (cfg.lightDir || 0) * D2R;
-  dirLight.position.set(Math.sin(a) * 2, 2.2, Math.cos(a) * 2);
-  dirLight.intensity = Math.PI * cfg.light; ambLight.intensity = 0.6 * cfg.light;
-}
-applyLight();
-function resize() {
-  const r = $('stage').getBoundingClientRect();
-  const w = Math.max(1, r.width), h = Math.max(1, r.height);
-  renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix(); frameCamera();
-}
+function applyLight() { const a = (W.lightDir || 0) * D2R; dirLight.position.set(Math.sin(a) * 2, 2.2, Math.cos(a) * 2); dirLight.intensity = Math.PI * W.light; ambLight.intensity = 0.6 * W.light; }
+function resize() { const r = $('stage').getBoundingClientRect(); const w = Math.max(1, r.width), h = Math.max(1, r.height); renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix(); frameCamera(); }
 new ResizeObserver(resize).observe($('stage'));
 
-// ---------- 아바타 ----------
-let vrm = null, rig = null; // rig: { headY, height, hipsY, rootQ, rootQi, has: {expr} }
-const loader = new GLTFLoader();
-loader.register(p => new VRMLoaderPlugin(p));
-const EXPRS = ['aa', 'ih', 'ou', 'ee', 'oh', 'blink', 'blinkLeft', 'blinkRight', 'happy', 'angry', 'sad', 'relaxed', 'surprised', 'neutral'];
+// ---------- 카메라 구도 (우리 전용) ----------
+const cam = { zoom: 1, camY: 0, camX: 0, camRot: 0 };
+for (const id of Object.keys(cam)) {
+  const e = $(id), out = e.nextElementSibling; if (id in PS) e.value = PS[id];
+  const q = { zoom: 'zoom', camY: 'y', camX: 'x', camRot: 'rot' }[id]; if (params.get(q) !== null && !isNaN(+params.get(q))) e.value = +params.get(q);
+  cam[id] = +e.value; out.textContent = e.value;
+  e.addEventListener('input', () => { cam[id] = PS[id] = +e.value; out.textContent = e.value; savePS(); frameCamera(); });
+}
+let frame = params.get('frame') || PS.frame || 'bust';
+let vrm = null, rig = null;
+function frameCamera() {
+  if (!rig) { camera.position.set(0, 1.3, 1.2); camera.lookAt(0, 1.3, 0); return; }
+  const tan = Math.tan(camera.fov * D2R / 2), z = cam.zoom || 1;
+  let ty, viewH;
+  if (frame === 'full') { viewH = rig.top * 1.12; ty = rig.top / 2; } else { viewH = (rig.top - rig.neckY) * 2.4 + 0.1; ty = rig.neckY + (rig.top - rig.neckY) * 0.25; }
+  const needW = frame === 'full' ? 0.6 : 0.62; const fitW = needW / (2 * tan * camera.aspect);
+  const dist = Math.max(viewH / (2 * tan), fitW) / z;
+  ty += (cam.camY || 0) * (frame === 'full' ? rig.top : 0.5);
+  const a = (cam.camRot || 0) * D2R, cx = rig.centerX + (cam.camX || 0) * (frame === 'full' ? 1 : 0.5);
+  camera.position.set(cx + Math.sin(a) * dist, ty, Math.cos(a) * dist); camera.lookAt(cx, ty, 0); dirLight.target.position.set(0, ty, 0);
+}
+for (const b of $('frameRow').querySelectorAll('button')) { b.classList.toggle('on', b.dataset.f === frame); b.onclick = () => { frame = PS.frame = b.dataset.f; savePS(); for (const x of $('frameRow').children) x.classList.toggle('on', x === b); frameCamera(); }; }
+$('camReset').onclick = () => { for (const [id, v] of [['zoom', 1], ['camY', 0], ['camX', 0], ['camRot', 0]]) { $(id).value = v; $(id).dispatchEvent(new Event('input')); } };
+canvas.addEventListener('wheel', e => { e.preventDefault(); const z = $('zoom'); z.value = clamp(+z.value * Math.exp(-e.deltaY * 0.001), +z.min, +z.max); z.dispatchEvent(new Event('input')); }, { passive: false });
+{ const pts = new Map(); let d0 = 0, z0 = 1;
+  canvas.addEventListener('pointerdown', e => { pts.set(e.pointerId, e); if (pts.size === 2) { const [a, b] = [...pts.values()]; d0 = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY); z0 = cam.zoom; } });
+  canvas.addEventListener('pointermove', e => { if (!pts.has(e.pointerId)) return; pts.set(e.pointerId, e); if (pts.size === 2 && d0) { const [a, b] = [...pts.values()]; const d = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY); const z = $('zoom'); z.value = clamp(z0 * d / d0, +z.min, +z.max); z.dispatchEvent(new Event('input')); } });
+  const up = e => { pts.delete(e.pointerId); if (pts.size < 2) d0 = 0; }; canvas.addEventListener('pointerup', up); canvas.addEventListener('pointercancel', up);
+}
 
+// ---------- 아바타 ----------
+const loader = new GLTFLoader(); loader.register(p => new VRMLoaderPlugin(p));
+const EXPRS = ['aa', 'ih', 'ou', 'ee', 'oh', 'blink', 'blinkLeft', 'blinkRight', 'happy', 'angry', 'sad', 'relaxed', 'surprised', 'neutral', 'lookUp', 'lookDown', 'lookLeft', 'lookRight'];
+const engine = new WD.ExpressionEngine();
+let EXPR_KEY = 'vv_expr_default';
 async function loadVRM(src, name) {
   status('아바타 불러오는 중…'); showErr('');
   let gltf;
@@ -89,34 +182,50 @@ async function loadVRM(src, name) {
   if (vrm) { scene.remove(vrm.scene); VRMUtils.deepDispose(vrm.scene); }
   VRMUtils.removeUnnecessaryVertices(gltf.scene);
   if (VRMUtils.combineSkeletons) VRMUtils.combineSkeletons(gltf.scene); else if (VRMUtils.removeUnnecessaryJoints) VRMUtils.removeUnnecessaryJoints(gltf.scene);
-  VRMUtils.rotateVRM0(v); // VRM0은 180° 돌려서 카메라(+Z)를 보게
+  VRMUtils.rotateVRM0(v);
   v.scene.traverse(o => { if (o.isMesh) o.frustumCulled = false; });
   vrm = v; scene.add(vrm.scene);
-  if (vrm.lookAt) vrm.lookAt.target = null; // 시선은 yaw/pitch로 직접 지정
+  if (vrm.lookAt) vrm.lookAt.target = null;
   const rootQ = vrm.scene.quaternion.clone();
   const has = {}; for (const n of EXPRS) has[n] = !!vrm.expressionManager?.getExpression(n);
+  const names = (vrm.expressionManager?.expressions || []).map(e => e.expressionName);
+  const arkitName = {}; const low = Object.fromEntries(names.map(n => [n.toLowerCase(), n])); for (const n of WD.ARKIT) if (low[n.toLowerCase()]) arkitName[n] = low[n.toLowerCase()];
+  const det = WD.detectMapping(names);
   const hipsN = vrm.humanoid.getNormalizedBoneNode('hips');
-  rig = { rootQ, rootQi: rootQ.clone().invert(), has, hipsPos: hipsN.position.clone() };
+  rig = { rootQ, rootQi: rootQ.clone().invert(), has, names, arkitName, det, hipsPos: hipsN.position.clone() };
   vrm.humanoid.resetNormalizedPose(); vrm.update(0); vrm.scene.updateMatrixWorld(true);
   const wp = n => { const b = vrm.humanoid.getNormalizedBoneNode(n) || vrm.humanoid.getRawBoneNode(n); return b ? b.getWorldPosition(new THREE.Vector3()) : null; };
   const head = wp('head'), neck = wp('neck') || head, hips = wp('hips');
   const box = new THREE.Box3().setFromObject(vrm.scene);
-  rig.headY = head.y; rig.neckY = neck.y; rig.height = box.max.y; rig.top = Math.max(box.max.y, head.y + 0.12); rig.hipsY = hips.y; rig.centerX = head.x;
-  rig.lowerArm = !!vrm.humanoid.getNormalizedBoneNode('leftLowerArm');
+  rig.headY = head.y; rig.neckY = neck.y; rig.height = box.max.y; rig.top = Math.max(box.max.y, head.y + 0.12); rig.hipsY = hips.y; rig.centerX = head.x; rig.torso = Math.max(0.2, head.y - hips.y);
   const meta = vrm.meta || {};
   const title = meta.name || meta.title || name || '이름 없음';
-  $('avatarName').textContent = `아바타: ${title} (VRM ${meta.metaVersion === '0' ? '0.x' : '1.0'})`;
-  VV.loaded = true; VV.avatar = { title, version: meta.metaVersion, has, lookAt: vrm.lookAt?.applier?.constructor?.type || (vrm.lookAt ? 'yes' : 'none') };
-  buildExprButtons(); frameCamera(); status(mode === 'demo' ? '데모 모드' : mode === 'track' ? `추적 중 (${tracker.delegate})` : '대기 중');
+  $('avatarName').textContent = `아바타: ${title} (VRM ${meta.metaVersion === '0' ? '0.x' : '1.0'}) · 매핑 자동 감지: ${det.type} (ARKit ${det.hit}/52)`;
+  // 표정: Warudo처럼 VRM 표정을 가져옴 (아바타별 저장)
+  EXPR_KEY = 'vv_expr_' + title;
+  const imported = WD.importVrmExpressions(names);
+  const saved = VV.urlExpr || LS.get(EXPR_KEY, null);
+  engine.st.clear(); engine.setList(saved ? mergeExpr(imported, saved) : imported);
+  VV.loaded = true; VV.avatar = { title, version: meta.metaVersion, has, mapping: det, expressions: engine.list.map(e => e.Name), lookAt: vrm.lookAt?.applier?.constructor?.type || (vrm.lookAt ? 'yes' : 'none') };
+  buildExprButtons(); buildExprEditor(); frameCamera(); status(mode === 'demo' ? '데모 모드' : mode === 'track' ? `추적 중 (${tracker.delegate})` : '대기 중');
   return true;
 }
-
-// 아바타 기억 (IndexedDB) — 파일은 기기 밖으로 나가지 않음
+// 가져온 표정 설정을 현재 아바타 표정에 이름으로 맞춤 (Joy ↔ happy 등)
+function mergeExpr(base, incoming) {
+  const out = base.map(e => ({ ...e }));
+  for (const x of incoming) {
+    const t = out.find(e => e.Name.toLowerCase() === String(x.Name).toLowerCase() || (e.vrm && e.vrm.toLowerCase() === String(x.Name).toLowerCase()));
+    if (t) for (const k of ['Layer', 'IsBinary', 'TargetValue', 'EnterDuration', 'EnterDelay', 'ExitDuration', 'ExitDelay', 'DisableEyeBlinkTracking', 'DisableMouthTracking', 'DisableBrowTracking', 'TriggerConditions']) if (x[k] !== undefined) t[k] = structuredClone(x[k]);
+  }
+  return out;
+}
+const saveExpr = () => LS.set(EXPR_KEY, engine.list);
 const idb = () => new Promise((res, rej) => { const r = indexedDB.open('vv_avatar', 1); r.onupgradeneeded = () => r.result.createObjectStore('f'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
 const idbGet = async () => { const db = await idb(); return new Promise(res => { const q = db.transaction('f').objectStore('f').get('vrm'); q.onsuccess = () => res(q.result || null); q.onerror = () => res(null); }); };
 const idbPut = async v => { const db = await idb(); return new Promise(res => { const tx = db.transaction('f', 'readwrite'); v ? tx.objectStore('f').put(v, 'vrm') : tx.objectStore('f').delete('vrm'); tx.oncomplete = res; tx.onerror = res; }); };
 async function loadFile(file) {
   if (!file) return;
+  if (/\.json$/i.test(file.name)) return importSettingsFile(file);
   if (!/\.vrm$/i.test(file.name) && !/\.glb$/i.test(file.name)) { showErr('.vrm 파일만 불러올 수 있어요.'); return; }
   const buf = await file.arrayBuffer();
   if (await loadVRM(buf, file.name)) { try { await idbPut({ name: file.name, buf }); } catch {} }
@@ -130,122 +239,88 @@ $('vrmDefault').onclick = async () => { await idbPut(null).catch(() => {}); load
   addEventListener('drop', e => { e.preventDefault(); dc = 0; drop.hidden = true; loadFile(e.dataTransfer.files[0]); });
 }
 
-// ---------- 카메라 프레이밍 ----------
-function frameCamera() {
-  if (!rig) { camera.position.set(0, 1.3, 1.2); camera.lookAt(0, 1.3, 0); return; }
-  const tan = Math.tan(camera.fov * D2R / 2), z = cfg.zoom || 1;
-  let ty, viewH;
-  if (cfg.frame === 'full') { viewH = rig.top * 1.12; ty = rig.top / 2; }
-  else { viewH = (rig.top - rig.neckY) * 2.4 + 0.1; ty = rig.neckY + (rig.top - rig.neckY) * 0.25; }
-  // 세로 화면(휴대폰)에서는 가로가 좁으니 어깨가 잘리지 않게 거리 보정
-  const needW = cfg.frame === 'full' ? 0.6 : 0.62; const fitW = needW / (2 * tan * camera.aspect);
-  let dist = Math.max(viewH / (2 * tan), fitW) / z;
-  ty += (cfg.camY || 0) * (cfg.frame === 'full' ? rig.top : 0.5);
-  const a = (cfg.camRot || 0) * D2R, cx = rig.centerX + (cfg.camX || 0) * (cfg.frame === 'full' ? 1 : 0.5);
-  camera.position.set(cx + Math.sin(a) * dist, ty, Math.cos(a) * dist);
-  camera.lookAt(cx, ty, 0);
-  dirLight.target.position.set(0, ty, 0);
-}
-for (const b of $('frameRow').querySelectorAll('button')) {
-  b.classList.toggle('on', b.dataset.f === cfg.frame);
-  b.onclick = () => { cfg.frame = PS.frame = b.dataset.f; savePS(); for (const x of $('frameRow').children) x.classList.toggle('on', x === b); frameCamera(); };
-}
-$('camReset').onclick = () => { for (const [id, v] of [['zoom', 1], ['camY', 0], ['camX', 0], ['camRot', 0], ['light', 1], ['lightDir', -25]]) { $(id).value = v; $(id).dispatchEvent(new Event('input')); } };
-for (const [q, id] of [['zoom', 'zoom'], ['y', 'camY'], ['x', 'camX'], ['rot', 'camRot']]) if (params.get(q) !== null && !isNaN(+params.get(q))) { $(id).value = +params.get(q); cfg[id] = +params.get(q); $(id).nextElementSibling.textContent = $(id).value; }
-// 휠 / 핀치 확대
-canvas.addEventListener('wheel', e => { e.preventDefault(); const el = $('zoom'); el.value = clamp(+el.value * Math.exp(-e.deltaY * 0.001), +el.min, +el.max); el.dispatchEvent(new Event('input')); }, { passive: false });
-{ const pts = new Map(); let d0 = 0, z0 = 1;
-  canvas.addEventListener('pointerdown', e => { pts.set(e.pointerId, e); if (pts.size === 2) { const [a, b] = [...pts.values()]; d0 = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY); z0 = cfg.zoom; } });
-  canvas.addEventListener('pointermove', e => { if (!pts.has(e.pointerId)) return; pts.set(e.pointerId, e); if (pts.size === 2 && d0) { const [a, b] = [...pts.values()]; const d = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY); const el = $('zoom'); el.value = clamp(z0 * d / d0, +el.min, +el.max); el.dispatchEvent(new Event('input')); } });
-  const up = e => { pts.delete(e.pointerId); if (pts.size < 2) d0 = 0; }; canvas.addEventListener('pointerup', up); canvas.addEventListener('pointercancel', up);
-}
-
-// ---------- 표정 프리셋 ----------
-const PRESETS = [['auto', '자동'], ['happy', '웃음'], ['angry', '화남'], ['sad', '슬픔'], ['relaxed', '즐거움'], ['surprised', '놀람']];
-let exprOverride = 'auto';
+// ---------- 표정 버튼 / 편집 ----------
 function buildExprButtons() {
   const box = $('expr'); box.innerHTML = '';
-  PRESETS.forEach(([k, label], i) => {
-    const b = document.createElement('button'); b.textContent = `${i + 1} ${label}`; b.dataset.e = k;
-    const na = k !== 'auto' && rig && !rig.has[k]; b.classList.toggle('na', na); if (na) b.title = '이 아바타에는 이 표정이 없어요';
-    b.classList.toggle('on', k === exprOverride); b.onclick = () => setExpr(k); box.appendChild(b);
-  });
+  const off = el('button', {}, '1 끄기'); off.onclick = () => engine.exitAll(now()); box.append(off);
+  engine.list.slice(0, 8).forEach((e, i) => { const b = el('button', {}, `${i + 2} ${e.Name}`); b.dataset.e = e.Name; b.onclick = () => toggleExpr(e.Name); box.append(b); });
 }
-function setExpr(k) { exprOverride = k; for (const b of $('expr').children) b.classList.toggle('on', b.dataset.e === k); VV.exprOverride = k; }
+const now = () => performance.now() / 1000;
+function toggleExpr(name) { engine.isActive(name) ? engine.exit(name, now()) : engine.enter(name, now()); }
+function syncExprButtons() { for (const b of $('expr').children) if (b.dataset.e) b.classList.toggle('on', engine.isActive(b.dataset.e)); }
+const condToText = tcs => (tcs || []).map(t => t.Conditions.map(c => `${c.BlendShape}${c.Condition === 'LessThanOrEqual' ? '<=' : '>='}${c.Value}`).join(' & ')).join(' | ');
+function textToCond(s, old) {
+  const out = [];
+  for (const grp of s.split('|').map(x => x.trim()).filter(Boolean)) {
+    const conds = []; for (const c of grp.split('&')) { const m = c.trim().match(/^([A-Za-z_0-9]+)\s*(>=|<=|>|<)\s*(-?[0-9.]+)$/); if (!m) return null; conds.push({ BlendShape: m[1], Condition: m[2][0] === '<' ? 'LessThanOrEqual' : 'GreaterThanOrEqual', Value: +m[3] }); }
+    const prev = old?.[out.length] || {}; out.push({ Conditions: conds, TriggerWhenMet: prev.TriggerWhenMet || 'Enter', TriggerWhenMetDelay: prev.TriggerWhenMetDelay ?? 0, TriggerWhenNotMet: prev.TriggerWhenNotMet || 'Exit', TriggerWhenNotMetDelay: prev.TriggerWhenNotMetDelay ?? 2 });
+  }
+  return out;
+}
+function buildExprEditor() {
+  exprList.innerHTML = '';
+  if (!engine.list.length) exprList.append(el('p', { class: 'hint' }, '이 아바타에는 가져올 표정이 없어요.'));
+  for (const e of engine.list) {
+    const num = (k, step = 0.05) => { const n = el('input', { type: 'number', step }); n.value = e[k]; n.onchange = () => { if (isFinite(+n.value) && n.value !== '') { e[k] = +n.value; saveExpr(); } else n.value = e[k]; }; return n; };
+    const chk = (k, label) => { const c = el('input', { type: 'checkbox' }); c.checked = !!e[k]; c.onchange = () => { e[k] = c.checked; saveExpr(); }; return el('label', {}, c, label); };
+    const cond = el('input', { type: 'text', placeholder: '조건 없음 (예: mouthSmileLeft>=0.5 & mouthSmileRight>=0.5)' }); cond.value = condToText(e.TriggerConditions);
+    cond.onchange = () => { const r = textToCond(cond.value, e.TriggerConditions); if (r) { e.TriggerConditions = r; cond.style.outline = ''; saveExpr(); engine.st.get(e.Name).trig = []; } else cond.style.outline = '2px solid #f55'; };
+    exprList.append(el('div', { class: 'exprbox' },
+      el('div', { class: 'r' }, el('b', {}, e.Name), el('small', {}, e.vrm ? `VRM: ${e.vrm}` : ''), el('label', {}, 'Layer ', num('Layer', 1)), chk('IsBinary', 'Is Binary (페이드 없음)')),
+      el('div', { class: 'r' }, el('label', {}, 'Enter Duration ', num('EnterDuration')), el('label', {}, 'Exit Duration ', num('ExitDuration')), el('label', {}, 'Enter Delay ', num('EnterDelay')), el('label', {}, 'Exit Delay ', num('ExitDelay'))),
+      el('div', { class: 'r' }, chk('DisableEyeBlinkTracking', 'Disable Eye Blink Tracking'), chk('DisableMouthTracking', 'Disable Mouth Tracking'), chk('DisableBrowTracking', 'Disable Brow Tracking')),
+      el('div', { class: 'r' }, el('span', {}, 'Trigger Conditions'), cond)));
+  }
+}
 
 // ---------- 추적 상태 ----------
 const bank = new FilterBank();
-function updFilter() { // 부드러움 0→컷오프 6Hz(민감), 1→0.25Hz(아주 부드러움)
-  const s = cfg.smooth; bank.set(lerp(6, 0.25, Math.pow(s, 0.8)), lerp(0.02, 3, cfg.beta * cfg.beta));
-}
-let mode = 'idle', faceSeen = -1e9, lastVideoTime = -1, trackCount = 0, trackT0 = 0;
-const calib = PS.calib || null; // { q:[x,y,z,w], t:[x,y,z], bs:{...} }
-let neutral = calib ? { q: new THREE.Quaternion().fromArray(calib.q), t: new THREE.Vector3().fromArray(calib.t), bs: calib.bs } : null;
-let lastRaw = null, autoCalibAt = 0;
-// 목표값(필터 후) / 화면 값(렌더 프레임마다 보간)
-const tgt = { yaw: 0, pitch: 0, roll: 0, lean: 0, leanZ: 0, eL: 0, eR: 0, gx: 0, gy: 0, aa: 0, ih: 0, ou: 0, ee: 0, oh: 0, happy: 0, angry: 0, sad: 0, relaxed: 0, surprised: 0 };
+function updFilter() { bank.set(lerp(6, 0.25, Math.pow(W.smooth, 0.8)), lerp(0.02, 3, W.beta * W.beta)); }
+let mode = 'idle', faceSeen = -1e9, lastVideoTime = -1, autoCalibAt = 0;
+let neutral = PS.calib2 ? { q: new THREE.Quaternion().fromArray(PS.calib2.q), t: new THREE.Vector3().fromArray(PS.calib2.t), gx: PS.calib2.gx || 0, gy: PS.calib2.gy || 0 } : null;
+let lastRaw = null;
+const tgt = { hx: 0, hy: 0, hz: 0, px: 0, py: 0, pz: 0, eL: 0, eR: 0, gx: 0, gy: 0, aa: 0, ih: 0, ou: 0, ee: 0, oh: 0, happy: 0, angry: 0, sad: 0, relaxed: 0, surprised: 0 };
 const cur = { ...tgt };
-const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _p = new THREE.Vector3(), _s = new THREE.Vector3(), _e = new THREE.Euler();
-
-function avg(bs, a, b) { return ((bs[a] || 0) + (bs[b] || 0)) / 2; }
-// 원시 결과 → 목표값 (거울/보정/감도/필터 적용)
+let mapped = {}, mappedF = {}; // Warudo 매핑 후 ARKit 값 (필터 전/후)
+const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _p = new THREE.Vector3(), _s = new THREE.Vector3(), _e = new THREE.Euler(), _qi = new THREE.Quaternion();
+const avg = (bs, a, b) => ((bs[a] || 0) + (bs[b] || 0)) / 2;
+const gazeOf = bs => [((bs.eyeLookOutLeft || 0) + (bs.eyeLookInRight || 0) - (bs.eyeLookInLeft || 0) - (bs.eyeLookOutRight || 0)) / 2, ((bs.eyeLookUpLeft || 0) + (bs.eyeLookUpRight || 0) - (bs.eyeLookDownLeft || 0) - (bs.eyeLookDownRight || 0)) / 2];
 function ingest(raw, tSec) {
-  const bs = raw.bs, nb = neutral?.bs || {};
-  // --- 머리 회전: MediaPipe 얼굴 변환 행렬 (원본 카메라 기준, 얼굴 정면 = +Z, 아바타도 +Z를 봄 → 그대로 대응)
+  // 1) 블렌드쉐이프: Warudo 순서로 처리 (좌우반전 → 개별 매핑 → 민감도 → 제한)
+  mapped = WD.processBlendShapes(raw.bs, W, MAPI);
+  for (const n of WD.ARKIT) mappedF[n] = bank.run('b_' + n, mapped[n], tSec, n.startsWith('eyeBlink') ? 4 : 2.5, 2);
+  const bs = mappedF;
+  // 2) 머리 회전/이동: 보정(Calibrate) 기준 → 좌우반전 → Head Rotation Intensity·Offset / Head Movement Intensity
   if (raw.m) {
     _m.fromArray(raw.m); _m.decompose(_p, _q, _s);
     if (neutral) _q.premultiply(_qi.copy(neutral.q).invert());
-    if (cfg.mirror) { _q.y = -_q.y; _q.z = -_q.z; }
+    if (W.MirroredTracking) { _q.y = -_q.y; _q.z = -_q.z; }
     _e.setFromQuaternion(_q, 'YXZ');
-    const k = cfg.headSens;
-    const yaw = clamp(_e.y * k / D2R, -75, 75), pitch = clamp(_e.x * k / D2R, -55, 55), roll = clamp(_e.z * k / D2R, -50, 50);
-    let tx = _p.x - (neutral ? neutral.t.x : 0), ty = _p.y - (neutral ? neutral.t.y : 0);
-    if (cfg.mirror) tx = -tx;
-    tgt.yaw = bank.run('yaw', yaw, tSec); tgt.pitch = bank.run('pitch', pitch, tSec); tgt.roll = bank.run('roll', roll, tSec);
-    tgt.lean = bank.run('lean', clamp(-tx * 0.7, -12, 12), tSec, 0.7); // 몸을 옆으로 옮기면 상체 기울기
-    tgt.leanZ = bank.run('leanZ', clamp(ty * 0.4, -6, 6), tSec, 0.7);
+    const I = W.HeadRotationIntensity, O = W.HeadRotationOffset;
+    const hx = clamp(_e.x * R2D * I[0] + O[0], -90, 90), hy = clamp(_e.y * R2D * I[1] + O[1], -90, 90), hz = clamp(_e.z * R2D * I[2] + O[2], -90, 90);
+    const t = [_p.x - (neutral ? neutral.t.x : 0), _p.y - (neutral ? neutral.t.y : 0), _p.z - (neutral ? neutral.t.z : 0)];
+    if (W.MirroredTracking) t[0] = -t[0];
+    const tm = WD.headTranslation(t, W);
+    tgt.hx = bank.run('hx', hx, tSec); tgt.hy = bank.run('hy', hy, tSec); tgt.hz = bank.run('hz', hz, tSec);
+    tgt.px = bank.run('px', tm[0], tSec, 0.7); tgt.py = bank.run('py', tm[1], tSec, 0.7); tgt.pz = bank.run('pz', tm[2], tSec, 0.7);
   }
-  // --- 눈: 좌우 따로 (거울: 사용자 왼눈 → 아바타 오른눈 = 화면 왼쪽)
-  const th = cfg.blinkTh;
-  const eye = (side) => { const v = bs['eyeBlink' + side] || 0, n0 = Math.min(nb['eyeBlink' + side] ?? 0.1, th - 0.15); return smoothstep((v - n0 - 0.04) / Math.max(0.08, th - n0 - 0.04)); };
-  let uL = eye('Left'), uR = eye('Right');
-  if (!cfg.wink || Math.abs(uL - uR) < 0.45) { const m = Math.max(uL, uR) * 0.6 + Math.min(uL, uR) * 0.4; uL = uR = m; }
-  const aL = cfg.mirror ? uR : uL, aR = cfg.mirror ? uL : uR;
-  tgt.eL = bank.run('eL', aL, tSec, 4, 2); tgt.eR = bank.run('eR', aR, tSec, 4, 2);
-  // --- 시선 (+gx = 사용자 왼쪽, +gy = 위)
-  const gx = ((bs.eyeLookOutLeft || 0) + (bs.eyeLookInRight || 0) - (bs.eyeLookInLeft || 0) - (bs.eyeLookOutRight || 0)) / 2;
-  const gy = ((bs.eyeLookUpLeft || 0) + (bs.eyeLookUpRight || 0) - (bs.eyeLookDownLeft || 0) - (bs.eyeLookDownRight || 0)) / 2;
-  const gx0 = neutral?.gx || 0, gy0 = neutral?.gy || 0;
-  tgt.gx = bank.run('gx', (cfg.mirror ? -1 : 1) * (gx - gx0), tSec, 1.5); tgt.gy = bank.run('gy', gy - gy0, tSec, 1.5);
-  // --- 입 (모음 AIUEO)
-  const ms = cfg.mouthSens;
-  const jaw = clamp01(((bs.jawOpen || 0) - (nb.jawOpen || 0) * 0.8 - 0.02) * ms);
-  const funnel = clamp01(((bs.mouthFunnel || 0) - (nb.mouthFunnel || 0)) * ms * 1.1);
-  const pucker = clamp01(((bs.mouthPucker || 0) - (nb.mouthPucker || 0)) * ms);
-  const smile = clamp01(avg(bs, 'mouthSmileLeft', 'mouthSmileRight') - (avg(nb, 'mouthSmileLeft', 'mouthSmileRight') || 0) * 0.8);
-  const stretch = clamp01((avg(bs, 'mouthStretchLeft', 'mouthStretchRight') - (avg(nb, 'mouthStretchLeft', 'mouthStretchRight') || 0)) * 2.2);
-  const lowerDown = clamp01((avg(bs, 'mouthLowerDownLeft', 'mouthLowerDownRight') - (avg(nb, 'mouthLowerDownLeft', 'mouthLowerDownRight') || 0)) * ms);
-  const open = clamp01(Math.max(jaw, lowerDown * 0.7));
-  const round = clamp01(Math.max(funnel, pucker * 0.9));
-  const wide = clamp01(stretch + smile * 0.6);
-  let v = {
-    aa: open * (1 - round) * (1 - wide * 0.55),
-    oh: open * round,
-    ou: round * (1 - open) * 0.85,
-    ee: open * wide * (1 - round) * 0.9,
-    ih: wide * (1 - open) * (1 - round) * 0.45 * clamp01(lowerDown * 4 + jaw * 4),
-  };
+  // 3) 눈 깜빡임 (Warudo: 매핑된 eyeBlink 값을 그대로 사용)
+  tgt.eL = bs.eyeBlinkLeft; tgt.eR = bs.eyeBlinkRight;
+  // 4) 시선 (+gx = 아바타 왼쪽, +gy = 위). 보정 시 시선도 보정(Calibrate Eye Movement)
+  const [gx, gy] = gazeOf(bs);
+  const c = W.CalibrateEyeMovement && neutral ? neutral : { gx: 0, gy: 0 };
+  tgt.gx = gx - c.gx; tgt.gy = gy - c.gy;
+  // 5) VRM 매핑용 모음 (ARKit → AIUEO, 변환 공식은 Warudo 비공개 → 우리 공식)
+  const jaw = bs.jawOpen, funnel = bs.mouthFunnel, pucker = bs.mouthPucker, smile = avg(bs, 'mouthSmileLeft', 'mouthSmileRight');
+  const stretch = clamp01(avg(bs, 'mouthStretchLeft', 'mouthStretchRight') * 2.2), lowerDown = avg(bs, 'mouthLowerDownLeft', 'mouthLowerDownRight');
+  const open = clamp01(Math.max(clamp01((jaw - 0.02) * 1.6), lowerDown * 1.1)), round = clamp01(Math.max(funnel * 1.6, pucker * 1.4)), wide = clamp01(stretch + smile * 0.6);
+  const v = { aa: open * (1 - round) * (1 - wide * 0.55), oh: open * round, ou: round * (1 - open) * 0.85, ee: open * wide * (1 - round) * 0.9, ih: wide * (1 - open) * (1 - round) * 0.45 * clamp01(lowerDown * 4 + jaw * 4) };
   const sum = v.aa + v.ih + v.ou + v.ee + v.oh; if (sum > 1) for (const k in v) v[k] /= sum;
-  for (const k in v) tgt[k] = bank.run(k, v[k], tSec, 2.5, 2);
-  // --- 감정
-  const es = cfg.emoSens;
-  const browDown = avg(bs, 'browDownLeft', 'browDownRight') - (avg(nb, 'browDownLeft', 'browDownRight') || 0);
-  const browUp = (bs.browInnerUp || 0) - (nb.browInnerUp || 0);
-  const frown = avg(bs, 'mouthFrownLeft', 'mouthFrownRight') - (avg(nb, 'mouthFrownLeft', 'mouthFrownRight') || 0);
-  const wideEye = avg(bs, 'eyeWideLeft', 'eyeWideRight') - (avg(nb, 'eyeWideLeft', 'eyeWideRight') || 0);
-  const cheek = avg(bs, 'cheekSquintLeft', 'cheekSquintRight');
-  let e = { happy: 0, angry: 0, sad: 0, relaxed: 0, surprised: 0 };
-  if (cfg.autoEmo) {
+  Object.assign(tgt, v);
+  // 6) 우리 전용: 표정 자동 인식
+  const e = { happy: 0, angry: 0, sad: 0, relaxed: 0, surprised: 0 };
+  if (W.autoEmo) {
+    const es = W.emoSens, browDown = avg(bs, 'browDownLeft', 'browDownRight'), browUp = bs.browInnerUp, frown = avg(bs, 'mouthFrownLeft', 'mouthFrownRight'), wideEye = avg(bs, 'eyeWideLeft', 'eyeWideRight'), cheek = avg(bs, 'cheekSquintLeft', 'cheekSquintRight');
     e.happy = smoothstep((smile + cheek * 0.3 - 0.38) / 0.35) * es;
     e.relaxed = smoothstep((smile - 0.12) / 0.22) * (1 - e.happy) * 0.55 * es;
     e.angry = smoothstep((browDown - 0.3) / 0.35) * (1 - e.happy) * es;
@@ -253,34 +328,30 @@ function ingest(raw, tSec) {
     e.surprised = smoothstep((browUp * 0.6 + wideEye * 0.9 + jaw * 0.25 - 0.55) / 0.35) * (1 - e.happy) * es;
   }
   for (const k in e) tgt[k] = bank.run('e_' + k, clamp01(e[k]), tSec, 0.8);
-  lastRaw = { bs, m: raw.m };
-  VV.raw = { jaw: +jaw.toFixed(3), blinkL: +(bs.eyeBlinkLeft || 0).toFixed(3), blinkR: +(bs.eyeBlinkRight || 0).toFixed(3), smile: +smile.toFixed(3), yaw: +tgt.yaw.toFixed(2), pitch: +tgt.pitch.toFixed(2), roll: +tgt.roll.toFixed(2) };
+  lastRaw = { bs: raw.bs, m: raw.m };
+  VV.raw = { jaw: +(raw.bs.jawOpen || 0).toFixed(3), blinkL: +(raw.bs.eyeBlinkLeft || 0).toFixed(3), blinkR: +(raw.bs.eyeBlinkRight || 0).toFixed(3), mappedBlinkL: +mapped.eyeBlinkLeft.toFixed(3), mappedBlinkR: +mapped.eyeBlinkRight.toFixed(3), hx: +tgt.hx.toFixed(2), hy: +tgt.hy.toFixed(2), hz: +tgt.hz.toFixed(2) };
 }
-const _qi = new THREE.Quaternion();
-function calibrate() {
+function calibrate() { // Warudo Calibrate: 머리 회전·위치 기준(+시선). 블렌드쉐이프는 보정하지 않음
   if (!lastRaw || !lastRaw.m) { showErr('얼굴이 인식된 상태에서 눌러 주세요.'); return; }
   _m.fromArray(lastRaw.m); _m.decompose(_p, _q, _s);
-  const bs = lastRaw.bs;
-  const gx = ((bs.eyeLookOutLeft || 0) + (bs.eyeLookInRight || 0) - (bs.eyeLookInLeft || 0) - (bs.eyeLookOutRight || 0)) / 2;
-  const gy = ((bs.eyeLookUpLeft || 0) + (bs.eyeLookUpRight || 0) - (bs.eyeLookDownLeft || 0) - (bs.eyeLookDownRight || 0)) / 2;
-  neutral = { q: _q.clone(), t: _p.clone(), bs: { ...bs }, gx, gy };
-  PS.calib = { q: _q.toArray(), t: _p.toArray(), bs: neutral.bs, gx, gy }; savePS(); bank.reset();
+  const [gx, gy] = gazeOf(WD.processBlendShapes(lastRaw.bs, W, MAPI));
+  neutral = { q: _q.clone(), t: _p.clone(), gx, gy };
+  PS.calib2 = { q: _q.toArray(), t: _p.toArray(), gx, gy }; savePS(); bank.reset();
   showErr(''); status('정면 보정 완료'); VV.calibrated = true;
 }
-if (neutral && PS.calib) { neutral.gx = PS.calib.gx || 0; neutral.gy = PS.calib.gy || 0; }
 $('calib').onclick = calibrate;
 
-// ---------- 데모 (카메라 없이 동작 순환) — 실제 추적과 같은 경로(ingest)로 가짜 결과를 넣음 ----------
+// ---------- 데모 (카메라 없이) — 실제 추적과 같은 경로(ingest) ----------
 function demoRaw(t) {
   const s = t / 1000;
   const yaw = Math.sin(s * 0.7) * 28 + Math.sin(s * 1.9) * 4, pitch = Math.sin(s * 0.53 + 1) * 14, roll = Math.sin(s * 0.41 + 2) * 12;
-  _e.set(pitch * D2R, (cfg.mirror ? -yaw : yaw) * D2R, (cfg.mirror ? -roll : roll) * D2R, 'YXZ'); _q.setFromEuler(_e);
+  _e.set(pitch * D2R, (W.MirroredTracking ? -yaw : yaw) * D2R, (W.MirroredTracking ? -roll : roll) * D2R, 'YXZ'); _q.setFromEuler(_e);
   if (neutral) _q.premultiply(neutral.q);
-  _m.compose(new THREE.Vector3(Math.sin(s * 0.33) * 6 + (neutral ? neutral.t.x : 0), (neutral ? neutral.t.y : 0), -40), _q, new THREE.Vector3(1, 1, 1));
+  _m.compose(new THREE.Vector3(Math.sin(s * 0.33) * 6 + (neutral ? neutral.t.x : 0), (neutral ? neutral.t.y : 0), (neutral ? neutral.t.z : -40)), _q, new THREE.Vector3(1, 1, 1));
   const ph = (s % 12);
   const blinkPh = (s % 3.7) < 0.16 ? 1 : 0, winkPh = ph > 9.5 && ph < 10.3 ? 1 : 0;
   const vowel = Math.floor(s * 2.2) % 6; const talk = ph < 6 ? Math.abs(Math.sin(s * 9)) : 0;
-  const bs = { eyeBlinkLeft: Math.max(blinkPh, winkPh) * 0.9, eyeBlinkRight: blinkPh * 0.9,
+  const bs = { eyeBlinkLeft: Math.max(blinkPh, winkPh) * 0.85, eyeBlinkRight: blinkPh * 0.85,
     jawOpen: talk * [0.5, 0.15, 0.2, 0.3, 0.4, 0][vowel], mouthFunnel: talk * [0, 0, 0.5, 0, 0.6, 0][vowel], mouthPucker: talk * [0, 0, 0.6, 0, 0.2, 0][vowel],
     mouthStretchLeft: talk * [0, 0.5, 0, 0.4, 0, 0][vowel], mouthStretchRight: talk * [0, 0.5, 0, 0.4, 0, 0][vowel], mouthLowerDownLeft: talk * 0.2, mouthLowerDownRight: talk * 0.2,
     mouthSmileLeft: ph > 6 && ph < 8.5 ? 0.85 : 0.05, mouthSmileRight: ph > 6 && ph < 8.5 ? 0.85 : 0.05,
@@ -302,78 +373,103 @@ async function startCamera() {
     video.srcObject = stream; await video.play();
     status('얼굴 인식 모델 불러오는 중…');
     await loadTracker();
-    mode = 'track'; bank.reset(); trackT0 = performance.now(); autoCalibAt = neutral ? 0 : performance.now() + 1500;
-    status(`추적 중 (${tracker.delegate})`); $('start').textContent = '■ 카메라 끄기'; $('start').disabled = false;
-    $('start').onclick = stopCamera;
+    mode = 'track'; bank.reset(); autoCalibAt = neutral ? 0 : performance.now() + 1500;
+    status(`추적 중 (${tracker.delegate})`); $('start').textContent = '■ 카메라 끄기'; $('start').disabled = false; $('start').onclick = stopCamera;
   } catch (e) {
     console.error(e);
     showErr(e?.name === 'NotAllowedError' ? '카메라 권한이 거부됐어요. 브라우저 설정에서 허용해 주세요.' : ('카메라/모델을 시작하지 못했어요: ' + (e.message || e)));
     status('대기 중'); $('start').disabled = false;
   }
 }
-function stopCamera() {
-  const s = video.srcObject; if (s) s.getTracks().forEach(t => t.stop()); video.srcObject = null;
-  mode = 'idle'; status('대기 중'); $('start').textContent = '▶ 카메라 시작'; $('start').onclick = startCamera;
-}
+function stopCamera() { const s = video.srcObject; if (s) s.getTracks().forEach(t => t.stop()); video.srcObject = null; mode = 'idle'; status('대기 중'); $('start').textContent = '▶ 카메라 시작'; $('start').onclick = startCamera; }
 $('start').onclick = startCamera;
 function startDemo() { if (mode === 'track') stopCamera(); mode = 'demo'; bank.reset(); status('데모 모드'); }
 $('demo').onclick = () => mode === 'demo' ? (mode = 'idle', status('대기 중')) : startDemo();
-$('micBtn').onclick = async () => {
-  $('micBtn').disabled = true; showErr('');
-  if (await startMic()) { $('micBtn').textContent = '🎤 마이크 켜짐'; $('meter').hidden = false; }
-  else { showErr(mic.err); $('micBtn').disabled = false; }
-};
+$('micBtn').onclick = async () => { $('micBtn').disabled = true; showErr(''); if (await startMic()) { $('micBtn').textContent = '🎤 마이크 켜짐'; $('meter').hidden = false; } else { showErr(mic.err); $('micBtn').disabled = false; } };
 
 // ---------- 뼈대 적용 ----------
-const _qa = new THREE.Quaternion(), _qb = new THREE.Quaternion(), _ea = new THREE.Euler();
-// 아바타 공간(+Z를 봄, +X = 아바타 왼쪽) 기준 회전(도)을 정규화 뼈 로컬 회전으로 (VRM0은 루트가 180° 돌아 있어 보정)
+const _qa = new THREE.Quaternion(), _ea = new THREE.Euler(), _v = new THREE.Vector3(), _v2 = new THREE.Vector3();
 function setBone(name, x, y, z, order = 'YXZ') {
   const b = vrm.humanoid.getNormalizedBoneNode(name); if (!b) return false;
   _ea.set(x * D2R, y * D2R, z * D2R, order); _qa.setFromEuler(_ea);
-  b.quaternion.copy(rig.rootQi).multiply(_qa).multiply(rig.rootQ);
-  return true;
+  b.quaternion.copy(rig.rootQi).multiply(_qa).multiply(rig.rootQ); return true;
 }
 let blinkUntil = 0, nextBlink = 0, bounce = 0, excHi = false, excSince = 0, calmSince = 0;
 function autoBlink(t) {
   if (t > nextBlink) { blinkUntil = t + 150; nextBlink = t + 2200 + Math.random() * 3800; if (Math.random() < 0.15) nextBlink = t + 350; }
-  if (t >= blinkUntil) return 0;
-  const p = 1 - (blinkUntil - t) / 150; return Math.sin(p * Math.PI);
+  if (t >= blinkUntil) return 0; const p = 1 - (blinkUntil - t) / 150; return Math.sin(p * Math.PI);
+}
+const bodyHist = []; const bodyS = { x: 0, y: 0, z: 0 };
+const look = { hy: 0, hp: 0, ey: 0, ep: 0 };
+function cameraAngles() { // 머리에서 카메라까지 방향 (아바타 공간: +Z 정면, +X 아바타 왼쪽)
+  const hb = vrm.humanoid.getNormalizedBoneNode('head'); hb.getWorldPosition(_v); _v2.copy(camera.position).sub(_v);
+  return { yaw: Math.atan2(_v2.x, _v2.z) * R2D, pitch: -Math.atan2(_v2.y, Math.hypot(_v2.x, _v2.z)) * R2D }; // pitch +는 아래 (three-vrm/뼈 규칙)
 }
 function applyAvatar(t, dt) {
-  const tracking = (mode === 'track' || mode === 'demo') && t - faceSeen < 600;
-  VV.tracking = tracking;
-  // 렌더 프레임 보간: 추적(약 30fps) 사이를 부드럽게 이어줌
+  const tracking = (mode === 'track' || mode === 'demo') && t - faceSeen < 600; VV.tracking = tracking;
   const k = 1 - Math.exp(-dt / 0.035), kb = 1 - Math.exp(-dt / 0.02), kRelax = 1 - Math.exp(-dt / 0.5);
-  for (const n in cur) {
-    if (tracking) cur[n] += (tgt[n] - cur[n]) * (n === 'eL' || n === 'eR' ? kb : k);
-    else cur[n] += (0 - cur[n]) * kRelax; // 인식이 끊기면 천천히 정면으로
-  }
-  const s = t / 1000;
-  // --- 숨쉬기 / 흔들림
-  const br = cfg.breath ? 1 : 0;
-  const breath = Math.sin(s * 2 * Math.PI / 3.8) * br, sway = Math.sin(s * 0.45) * br, sway2 = Math.sin(s * 0.31 + 1) * br;
-  // --- 마이크
-  const e = mic.on ? micTick(t, cfg.micSens) : 0;
+  for (const n in cur) { if (tracking) cur[n] += (tgt[n] - cur[n]) * (n === 'eL' || n === 'eR' ? kb : k); else cur[n] += (0 - cur[n]) * kRelax; }
+  const s = t / 1000, ts = t / 1000;
+  // 대기 애니메이션(우리 근사) + Warudo Breathing/Swaying
+  const idle = W.idleAnim ? 1 : 0;
+  let breath = Math.sin(s * 2 * Math.PI / 3.8) * idle, sway = Math.sin(s * 0.45) * idle;
+  if (W.BreathingEnabled) breath += Math.sin(s * 2 * Math.PI * W.BreathingRate) * (W.BreathingExertion / 0.1);
+  if (W.SwayingEnabled) sway += Math.sin(s * 0.45 * 2) * (W.SwayingIntensity / 0.25);
+  // 마이크 (우리 전용 신남)
+  const e = mic.on ? micTick(t, W.micSens) : 0;
   VV.mic = mic.on ? { level: +mic.level.toFixed(3), score: +e.toFixed(3), bounce: +bounce.toFixed(3) } : null;
   if (mic.on) { $('meterBar').style.width = (e * 100).toFixed(0) + '%'; $('lvBar').style.width = (mic.level * 100).toFixed(0) + '%'; }
-  if (e > 0.6) { calmSince = 0; if (!excSince) excSince = t; if (t - excSince > 700) excHi = true; }
-  else { excSince = 0; if (e < 0.35) { if (!calmSince) calmSince = t; if (t - calmSince > 1200) excHi = false; } else calmSince = 0; }
+  if (e > 0.6) { calmSince = 0; if (!excSince) excSince = t; if (t - excSince > 700) excHi = true; } else { excSince = 0; if (e < 0.35) { if (!calmSince) calmSince = t; if (t - calmSince > 1200) excHi = false; } else calmSince = 0; }
   if (!mic.on) excHi = false;
-  const bAmp = cfg.micBounce && mic.on ? smoothstep((e - 0.3) / 0.5) : 0;
-  bounce += (bAmp - bounce) * (1 - Math.exp(-dt / 0.25));
-  // --- 머리 · 몸 분배
-  const f = cfg.bodyFollow, spineW = 0.12 + 0.18 * f, chestW = 0.1 + 0.2 * f;
-  const neckW = (1 - spineW - chestW) * 0.4, headW = (1 - spineW - chestW) * 0.6;
-  const Y = cur.yaw, P = cur.pitch, R = cur.roll;
-  const idleY = tracking ? 0 : sway2 * 3, idleP = tracking ? 0 : Math.sin(s * 0.6) * 2;
-  setBone('hips', 0, Y * 0.05 * f, -cur.lean * 0.15);
-  setBone('spine', P * spineW * 0.6 + breath * 0.6, Y * spineW + idleY * 0.3, R * spineW * 0.7 + cur.lean * 0.5 + sway * 0.8);
-  setBone('chest', P * chestW * 0.6 - breath * 1.2, Y * chestW + idleY * 0.3, R * chestW * 0.7 + cur.lean * 0.3);
+  const bAmp = W.micBounce && mic.on ? smoothstep((e - 0.3) / 0.5) : 0; bounce += (bAmp - bounce) * (1 - Math.exp(-dt / 0.25));
+  // --- 머리·몸 (Enable Head and Body Movements)
+  const hm = W.EnableHeadAndBodyMovements ? 1 : 0;
+  let head = { x: cur.hx * hm, y: cur.hy * hm, z: cur.hz * hm };
+  if (!tracking && W.IdleAutoHeadMovements) { head.y += Math.sin(s * 0.31 + 1) * 3; head.x += Math.sin(s * 0.6) * 2; head.z += Math.sin(s * 0.23) * 1.5; } // Idle: Auto Head Movements (모양 inferred)
+  // Look At (얼굴 추적 Blueprint): 정면을 볼 때 카메라를 보도록 머리·눈에 더함
+  const ca = cameraAngles();
+  let lookHY = 0, lookHP = 0, lookEY = 0, lookEP = 0;
+  if (W.LookAt && Math.hypot(ca.yaw, ca.pitch) <= W.MaximumLookAtAngle) {
+    const w = W.LookAtNodeWeight, mh = W.MaximalHeadRotation, me = W.MaximalEyeRotation;
+    lookHY = clamp(ca.yaw * W.LookAtNodeHeadWeight * w, -mh[1], mh[1]); lookHP = clamp(ca.pitch * W.LookAtNodeHeadWeight * w, -mh[0], mh[0]);
+    lookEY = clamp(ca.yaw * W.LookAtNodeEyesWeight * w, -me[0], me[0]); lookEP = clamp(ca.pitch * W.LookAtNodeEyesWeight * w, -me[1], me[1]);
+  }
+  look.hy += (lookHY - look.hy) * (1 - Math.exp(-dt * W.SmoothHeadTime)); look.hp += (lookHP - look.hp) * (1 - Math.exp(-dt * W.SmoothHeadTime));
+  look.ey += (lookEY - look.ey) * (1 - Math.exp(-dt * W.SmoothEyesTime)); look.ep += (lookEP - look.ep) * (1 - Math.exp(-dt * W.SmoothEyesTime));
+  head.y += look.hy; head.x += look.hp;
+  // Look At IK (캐릭터 에셋, 기본 꺼짐): 몸 → 머리 → 눈 순서로 나머지를 나눔, Clamp Weight로 제한 (Final IK 방식 추정)
+  let ikBody = { y: 0, x: 0 }, ikEye = { y: 0, x: 0 };
+  if (W.LookAtEnabled) {
+    const w = W.LookAtWeight, A = { y: ca.yaw - head.y, x: ca.pitch - head.x };
+    for (const ax of ['y', 'x']) {
+      const b = WD.clampLookAngle(A[ax], W.LookAtClampBodyWeight) * w * W.LookAtBodyWeight * 0.3;
+      const h = WD.clampLookAngle(A[ax] - b, W.LookAtClampHeadWeight) * w * W.LookAtHeadWeight;
+      const ey = WD.clampLookAngle(A[ax] - b - h, W.LookAtClampEyesWeight) * w * W.LookAtEyesWeight;
+      ikBody[ax] = b; head[ax] += h; ikEye[ax] = ey;
+    }
+  }
+  // Body Rotation Type + 지연/부드럽게
+  bodyHist.push([ts, { ...head }]); while (bodyHist.length > 2 && ts - bodyHist[1][0] >= W.BodyRotationDelayDuration) bodyHist.shift();
+  const delayed = W.BodyRotationDelayDuration > 0 ? bodyHist[0][1] : head;
+  const dist = WD.distributeBody(delayed, W);
+  const ks = W.BodyRotationSmoothingDuration > 0 ? 1 - Math.exp(-dt / W.BodyRotationSmoothingDuration) : 1;
+  for (const ax of ['x', 'y', 'z']) bodyS[ax] += (dist.body[ax] - bodyS[ax]) * ks;
+  const sum = W.BodyRotationHipsRotationIntensity + W.BodyRotationSpineRotationIntensity + W.BodyRotationChestRotationIntensity || 1;
+  const part = k => ({ x: bodyS.x * k / sum, y: bodyS.y * k / sum, z: bodyS.z * k / sum });
+  const hipsR = part(W.BodyRotationHipsRotationIntensity), spineR = part(W.BodyRotationSpineRotationIntensity), chestR = part(W.BodyRotationChestRotationIntensity);
+  const comp = W.BodyRotationNeckCompensation;
+  const hl = { x: head.x - comp * bodyS.x, y: head.y - comp * bodyS.y, z: head.z - comp * bodyS.z };
+  // 머리 이동 → 몸 이동(Body Movement Intensity) + 나머지는 상체 기울기 (분배 inferred)
+  const BMI = W.BodyMovementIntensity, px = cur.px * hm, pz = cur.pz * hm;
+  const leanZ = -Math.atan2(px * (1 - BMI), rig.torso) * R2D, leanX = Math.atan2(pz * (1 - BMI), rig.torso) * R2D;
+  setBone('hips', hipsR.x, hipsR.y, hipsR.z);
+  setBone('spine', spineR.x + leanX * 0.6 + breath * 0.6 + ikBody.x * 0.5, spineR.y + ikBody.y * 0.5, spineR.z + leanZ * 0.6 + sway * 0.8);
+  setBone('chest', chestR.x + leanX * 0.4 - breath * 1.2 + ikBody.x * 0.5, chestR.y + ikBody.y * 0.5, chestR.z + leanZ * 0.4);
   setBone('upperChest', 0, 0, 0);
-  setBone('neck', P * neckW + idleP * 0.4, Y * neckW + idleY * 0.4, R * neckW);
-  setBone('head', P * (headW + spineW * 0.4 + chestW * 0.4) + idleP * 0.6, Y * headW, R * (headW + (spineW + chestW) * 0.3) - sway * 0.6);
-  // --- 팔: T포즈 → 편하게 내림 (숨쉴 때 살짝 들썩)
-  const ad = cfg.armDown, arm = ad + breath * 1.2;
+  setBone('neck', hl.x * 0.4 - leanX * 0.5, hl.y * 0.4, hl.z * 0.4 - leanZ * 0.5);
+  setBone('head', hl.x * 0.6 - leanX * 0.5, hl.y * 0.6, hl.z * 0.6 - leanZ * 0.5 - sway * 0.6);
+  // 팔 (우리 전용: T포즈 → 내림)
+  const ad = W.armDown, arm = ad + breath * 1.2;
   setBone('leftShoulder', 0, 0, -breath * 0.6); setBone('rightShoulder', 0, 0, breath * 0.6);
   setBone('leftUpperArm', 4, -6, -arm, 'XYZ'); setBone('rightUpperArm', 4, 6, arm, 'XYZ');
   setBone('leftLowerArm', 0, -18 * ad / 72, 0); setBone('rightLowerArm', 0, 18 * ad / 72, 0);
@@ -381,43 +477,58 @@ function applyAvatar(t, dt) {
   for (const side of ['left', 'right']) { const sg = side === 'left' ? -1 : 1;
     for (const fn of ['Index', 'Middle', 'Ring', 'Little']) for (const seg of ['Proximal', 'Intermediate', 'Distal']) setBone(side + fn + seg, 0, 0, sg * (fn === 'Index' ? 12 : 18) * ad / 72);
     setBone(side + 'ThumbProximal', 0, sg * -10 * ad / 72, 0); }
-  // --- 통통 튀기 (신남)
   const hips = vrm.humanoid.getNormalizedBoneNode('hips');
-  hips.position.copy(rig.hipsPos); hips.position.y += bounce * 0.025 * Math.abs(Math.sin(s * Math.PI * 2.4)) + breath * 0.002;
-  // --- 표정
+  _v.set(px * BMI, 0, pz * BMI).applyQuaternion(rig.rootQi); // 세계 좌표 이동 → 루트 로컬
+  hips.position.copy(rig.hipsPos).add(_v); hips.position.y += bounce * 0.025 * Math.abs(Math.sin(s * Math.PI * 2.4)) + breath * 0.002;
+  VV.body = { hips: hipsR, spine: spineR, chest: chestR, headLocal: hl, look: { ...look }, cam: ca };
+  // --- 표정 (Expressions: 레이어·페이드·트리거)
   const em = vrm.expressionManager; if (!em) return;
-  let eL = cur.eL, eR = cur.eR;
-  if (!tracking && cfg.autoBlink) { const b = autoBlink(t); eL = Math.max(eL, b); eR = Math.max(eR, b); }
+  const exprOut = engine.update(ts);
+  const modelVals = {}; for (const ex of engine.list) if (ex.vrm) modelVals[ex.vrm] = exprOut[ex.Name];
+  engine.triggers({ ...modelVals, ...(tracking ? mapped : {}) }, ts);
+  syncExprButtons();
+  let fBlink = 1, fMouth = 1, fBrow = 1;
+  for (const ex of engine.list) { const w = exprOut[ex.Name] / (ex.TargetValue || 1); if (ex.DisableEyeBlinkTracking) fBlink = Math.min(fBlink, 1 - w); if (ex.DisableMouthTracking) fMouth = Math.min(fMouth, 1 - w); if (ex.DisableBrowTracking) fBrow = Math.min(fBrow, 1 - w); }
   const emo = { happy: cur.happy, angry: cur.angry, sad: cur.sad, relaxed: cur.relaxed, surprised: cur.surprised };
-  if (excHi && cfg.micExpr && exprOverride === 'auto') emo.happy = Math.max(emo.happy, 0.8);
-  if (exprOverride !== 'auto') { for (const n in emo) emo[n] = 0; emo[exprOverride] = 1; }
-  // 없는 표정 대체: 놀람 → 입 살짝 벌림 / 즐거움 → 웃음 약하게
-  if (!rig.has.relaxed && emo.relaxed > 0) emo.happy = Math.max(emo.happy, emo.relaxed * 0.5);
-  let emoSum = 0; for (const n in emo) emoSum += emo[n];
-  if (emoSum > 1) for (const n in emo) emo[n] /= emoSum;
-  for (const n in emo) if (rig.has[n]) em.setValue(n, emo[n]);
-  // 웃음 표정(눈을 감는 경우가 많음)과 깜빡임이 겹쳐 과해지지 않게
-  const eyeScale = 1 - Math.max(emo.happy, emo.relaxed * 0.5) * 0.85;
-  if (rig.has.blinkLeft && rig.has.blinkRight) { em.setValue('blinkLeft', clamp01(eL) * eyeScale); em.setValue('blinkRight', clamp01(eR) * eyeScale); if (rig.has.blink) em.setValue('blink', 0); }
-  else if (rig.has.blink) em.setValue('blink', clamp01((eL + eR) / 2) * eyeScale);
-  // 입 + 마이크 립싱크
-  const mouthScale = 1 - emo.happy * 0.25;
-  let vis = { aa: cur.aa, ih: cur.ih, ou: cur.ou, ee: cur.ee, oh: cur.oh };
+  if (excHi && W.micExpr) emo.happy = Math.max(emo.happy, 0.8);
+  const vrmW = {}; for (const n in emo) vrmW[n] = emo[n];
+  for (const ex of engine.list) if (ex.vrm) vrmW[ex.vrm] = Math.max(vrmW[ex.vrm] || 0, exprOut[ex.Name]);
+  for (const n in vrmW) if (em.getExpression(n)) em.setValue(n, clamp01(vrmW[n]));
+  // 눈 깜빡임 (Idle: Auto Blinking는 추적이 끊겼을 때)
+  let eL = cur.eL, eR = cur.eR;
+  if (!tracking && W.IdleAutoBlinking) { const b = autoBlink(t); eL = Math.max(eL, b); eR = Math.max(eR, b); }
+  eL *= fBlink; eR *= fBlink;
+  const arkit = W.BlendShapeMappingType === 'ARKit' || (W.BlendShapeMappingType === 'Auto' && rig.det.type === 'ARKit');
+  VV.mappingType = arkit ? 'ARKit' : 'VRM';
+  // 립싱크 (Disabled / WhenTrackingLost / Always)
   const lv = mic.on ? mic.level : 0;
-  if (lv > 0 && (cfg.lipMode === 'boost' || (cfg.lipMode === 'fallback' && !tracking))) {
-    const tot = vis.aa + vis.ih + vis.ou + vis.ee + vis.oh;
-    if (lv > tot) { const wob = 0.5 + 0.5 * Math.sin(s * 13); vis.aa = Math.max(vis.aa, lv * (0.6 + 0.3 * wob)); vis.oh = Math.max(vis.oh, lv * 0.25 * (1 - wob)); }
+  const lipOn = lv > 0 && (W.LipSync === 'Always' || (W.LipSync === 'WhenTrackingLost' && !tracking));
+  if (arkit) { // Perfect Sync: 매핑된 ARKit 값을 같은 이름 표정에 그대로
+    for (const n of WD.ARKIT) { const mn = rig.arkitName[n]; if (!mn) continue; let v = tracking ? mappedF[n] : 0;
+      if (n === 'eyeBlinkLeft') v = eL; else if (n === 'eyeBlinkRight') v = eR; else if (n.startsWith('mouth') || n.startsWith('jaw') || n === 'tongueOut' || n === 'cheekPuff') v *= fMouth; else if (n.startsWith('brow')) v *= fBrow;
+      if (n === 'jawOpen' && lipOn) v = Math.max(v, lv * 0.8);
+      em.setValue(mn, clamp01(v)); }
+  } else {
+    if (rig.has.blinkLeft && rig.has.blinkRight) { em.setValue('blinkLeft', clamp01(eL)); em.setValue('blinkRight', clamp01(eR)); if (rig.has.blink) em.setValue('blink', 0); }
+    else if (rig.has.blink) em.setValue('blink', clamp01((eL + eR) / 2));
+    let vis = { aa: cur.aa, ih: cur.ih, ou: cur.ou, ee: cur.ee, oh: cur.oh };
+    if (lipOn) { const tot = vis.aa + vis.ih + vis.ou + vis.ee + vis.oh; if (lv > tot) { const wob = 0.5 + 0.5 * Math.sin(s * 13); vis.aa = Math.max(vis.aa, lv * (0.6 + 0.3 * wob)); vis.oh = Math.max(vis.oh, lv * 0.25 * (1 - wob)); } }
+    for (const n in vis) if (rig.has[n]) em.setValue(n, clamp01(vis[n] * fMouth));
+    VV.vis = Object.fromEntries(Object.entries(vis).map(([k, v]) => [k, +v.toFixed(3)]));
   }
-  if (!rig.has.surprised && emo.surprised > 0) vis.oh = Math.max(vis.oh, emo.surprised * 0.35);
-  for (const n in vis) if (rig.has[n]) em.setValue(n, clamp01(vis[n] * mouthScale));
-  VV.vis = Object.fromEntries(Object.entries(vis).map(([k, v]) => [k, +v.toFixed(3)]));
-  // 시선 (yaw/pitch: 입력 각도, VRM lookAt 범위 맵이 실제 눈 회전으로 변환)
+  // 시선: Eye Movement Intensity × 기준 70°(우리 값, Warudo 기준배율 비공개) + 머리 회전 보정 + Look At 눈
   if (vrm.lookAt) {
-    const g = cfg.gaze, idleGx = tracking ? 0 : Math.sin(s * 0.27) * 0.15;
-    vrm.lookAt.yaw = clamp((cur.gx + idleGx) * g * 70, -90, 90);
-    vrm.lookAt.pitch = clamp(-cur.gy * g * 70, -90, 90);
+    const I = W.EyeMovementIntensity, C = W.EyeMovementHeadRotationCompensation;
+    const idleG = !tracking && W.IdleAutoEyeMovements ? Math.sin(s * 0.27) * 0.15 + (Math.sin(s * 1.7) > 0.97 ? 0.08 : 0) : 0;
+    let yaw = clamp((cur.gx + idleG) * I[0] * 70 - C[0] * cur.hy + look.ey + ikEye.y, -90, 90), pitch = clamp(-cur.gy * I[1] * 70 + C[1] * cur.hx + look.ep + ikEye.x, -90, 90);
+    const useBones = W.UseBonesForEyeMovement, useBS = W.UseBlendShapesForEyeMovement;
+    const applierIsBone = vrm.lookAt.applier?.constructor?.type === 'bone';
+    vrm.lookAt.yaw = (useBones || !applierIsBone) ? yaw : 0; vrm.lookAt.pitch = (useBones || !applierIsBone) ? pitch : 0;
+    if (useBS && applierIsBone && rig.has.lookLeft) { em.setValue('lookLeft', clamp01(yaw / 30)); em.setValue('lookRight', clamp01(-yaw / 30)); em.setValue('lookUp', clamp01(-pitch / 25)); em.setValue('lookDown', clamp01(pitch / 25)); }
+    VV.gaze = { yaw: +yaw.toFixed(2), pitch: +pitch.toFixed(2) };
   }
   VV.cur = Object.fromEntries(Object.entries(cur).map(([k, v]) => [k, +(+v).toFixed(3)]));
+  VV.expr = Object.fromEntries(Object.entries(exprOut).map(([k, v]) => [k, +v.toFixed(3)]));
 }
 
 // ---------- 메인 루프 ----------
@@ -425,13 +536,10 @@ let last = performance.now(), fpsN = 0, fpsT = last, tN = 0;
 function loop(t) {
   requestAnimationFrame(loop);
   const dt = Math.min(0.1, (t - last) / 1000); last = t;
-  updFilter();
   if (mode === 'track' && video.readyState >= 2 && video.currentTime !== lastVideoTime) {
     lastVideoTime = video.currentTime;
-    try {
-      const r = detect(video, t);
-      if (r) { ingest(r, t / 1000); faceSeen = t; tN++; trackCount++; if (autoCalibAt && t > autoCalibAt) { autoCalibAt = 0; calibrate(); } }
-    } catch (e) { console.error(e); VV.errors.push('detect: ' + e.message); }
+    try { const r = detect(video, t); if (r) { ingest(r, t / 1000); faceSeen = t; tN++; if (autoCalibAt && t > autoCalibAt) { autoCalibAt = 0; calibrate(); } } }
+    catch (e) { console.error(e); VV.errors.push('detect: ' + e.message); }
     status(t - faceSeen < 600 ? `추적 중 (${tracker.delegate})` : '얼굴을 찾는 중…');
   } else if (mode === 'demo') { ingest(demoRaw(t), t / 1000); faceSeen = t; tN++; }
   if (vrm && rig) { applyAvatar(t, dt); vrm.update(dt); }
@@ -441,57 +549,72 @@ function loop(t) {
 }
 
 // ---------- 배경 / 클린 뷰 / OBS ----------
-const setBg = c => { document.body.style.backgroundColor = c; $('bg').value = c; PS.bg = c; savePS(); };
-$('bg').addEventListener('input', e => setBg(e.target.value));
-$('green').onclick = () => { setTransp(false); setBg('#00ff00'); };
-const setTransp = on => { document.body.classList.toggle('transp', on); document.documentElement.classList.toggle('transp', on); $('transp').checked = on; PS.transp = on; };
-$('transp').onchange = e => { setTransp(e.target.checked); savePS(); };
-if (PS.bg) setBg(PS.bg); if (PS.transp) setTransp(true);
+function applyBg() { const on = !!W.TransparentBackground; document.body.classList.toggle('transp', on); document.documentElement.classList.toggle('transp', on); document.body.style.backgroundColor = W.ChromaKeyColor; }
+$('green').onclick = () => { W.TransparentBackground = false; W.ChromaKeyColor = '#00ff00'; saveW(); refreshUI(); };
 const bgParam = params.get('bg');
-if (bgParam === 'transparent' || params.get('transparent') === '1') setTransp(true);
-else if (bgParam) { setTransp(false); document.body.style.backgroundColor = '#' + bgParam.replace('#', ''); $('bg').value = '#' + bgParam.replace('#', '').slice(0, 6); }
+if (bgParam === 'transparent' || params.get('transparent') === '1') W.TransparentBackground = true;
+else if (bgParam) { W.TransparentBackground = false; W.ChromaKeyColor = '#' + bgParam.replace('#', '').slice(0, 6); }
 const setClean = on => { document.body.classList.toggle('clean', on); requestAnimationFrame(resize); };
 $('clean').onclick = () => setClean(true);
 if (params.get('clean') === '1') setClean(true);
-if (params.get('obs') === '1') { setClean(true); if (!bgParam) setTransp(true); }
+if (params.get('obs') === '1') { setClean(true); if (!bgParam) W.TransparentBackground = true; }
 $('panelToggle').onclick = () => { document.body.classList.toggle('collapsed'); requestAnimationFrame(resize); };
+function diffSettings() { const d = {}; for (const s of WD.SCHEMA) if (s.key !== 'TransparentBackground' && s.key !== 'ChromaKeyColor' && JSON.stringify(W[s.key]) !== JSON.stringify(WD.DEFAULTS[s.key])) d[s.key] = W[s.key]; return d; }
+function diffMapping() { const def = WD.defaultMapping(); return MAP.filter((m, i) => JSON.stringify(m) !== JSON.stringify(def.find(x => x.BlendShape === m.BlendShape) || def[i])); }
 function obsUrl() {
   const u = new URL(location.origin + location.pathname);
   u.searchParams.set('obs', '1'); u.searchParams.set('autostart', '1');
-  if (!cfg.mirror) u.searchParams.set('mirror', '0');
-  if (cfg.frame !== 'bust') u.searchParams.set('frame', cfg.frame);
-  if (cfg.zoom !== 1) u.searchParams.set('zoom', cfg.zoom); if (cfg.camY) u.searchParams.set('y', cfg.camY); if (cfg.camX) u.searchParams.set('x', cfg.camX); if (cfg.camRot) u.searchParams.set('rot', cfg.camRot);
-  if (!document.body.classList.contains('transp')) u.searchParams.set('bg', $('bg').value.replace('#', ''));
+  if (frame !== 'bust') u.searchParams.set('frame', frame);
+  if (cam.zoom !== 1) u.searchParams.set('zoom', cam.zoom); if (cam.camY) u.searchParams.set('y', cam.camY); if (cam.camX) u.searchParams.set('x', cam.camX); if (cam.camRot) u.searchParams.set('rot', cam.camRot);
+  if (!W.TransparentBackground) u.searchParams.set('bg', W.ChromaKeyColor.replace('#', ''));
+  const j = { s: diffSettings() }; const dm = diffMapping(); if (dm.length) j.m = dm; if (LS.get(EXPR_KEY, null)) j.e = engine.list;
+  if (Object.keys(j.s).length || j.m || j.e) u.searchParams.set('ws', b64e(JSON.stringify(j)));
   return u.toString();
 }
-$('obsCopy').onclick = async () => {
-  const url = obsUrl(), msg = $('obsMsg'); msg.hidden = false;
-  try { await navigator.clipboard.writeText(url); msg.textContent = '복사됨! OBS > 소스 추가 > 브라우저에 붙여넣기: ' + url; }
-  catch { msg.textContent = '아래 주소를 길게 눌러 복사하세요: ' + url; }
-};
+$('obsCopy').onclick = async () => { const url = obsUrl(), msg = $('obsMsg'); msg.hidden = false; try { await navigator.clipboard.writeText(url); msg.textContent = '복사됨! OBS > 소스 추가 > 브라우저에 붙여넣기: ' + url; } catch { msg.textContent = '아래 주소를 길게 눌러 복사하세요: ' + url; } };
 window.__obsUrl = obsUrl;
+
+// ---------- 설정 내보내기 / 가져오기 ----------
+function exportJSON() { return { format: 'vrm-vtuber-warudo', version: 2, exportedAt: new Date().toISOString(), settings: structuredClone(W), mapping: structuredClone(MAP), expressions: structuredClone(engine.list), camera: { frame, ...cam } }; }
+$('exportBtn').onclick = () => { const b = new Blob([JSON.stringify(exportJSON(), null, 2)], { type: 'application/json' }); const a = el('a', { href: URL.createObjectURL(b), download: 'vrm-vtuber-settings.json' }); document.body.append(a); a.click(); a.remove(); };
+function applyImport(json) {
+  const r = WD.importWarudoJSON(json);
+  Object.assign(W, r.settings);
+  if (r.mapping) { const base = WD.defaultMapping(); for (const m of r.mapping) { const i = base.findIndex(x => x.BlendShape === m.BlendShape); if (i >= 0) base[i] = m; } MAP = base; reindexMap(); }
+  if (r.expressions && vrm) { engine.st.clear(); engine.setList(mergeExpr(WD.importVrmExpressions(rig.names), r.expressions)); saveExpr(); buildExprButtons(); buildExprEditor(); }
+  if (r.kind === 'ours' && json.camera) { if (json.camera.frame) frame = PS.frame = json.camera.frame; for (const id of Object.keys(cam)) if (json.camera[id] !== undefined) { $(id).value = json.camera[id]; $(id).dispatchEvent(new Event('input')); } savePS(); }
+  saveW(); refreshUI();
+  const kinds = { ours: '우리 설정 파일', scene: 'Warudo 씬 파일', loose: 'JSON (구조 미확인)', unknown: '알 수 없음' };
+  const lines = [`형식: ${kinds[r.kind]}`, `가져온 값 ${r.found.length}개: ${r.found.join(', ') || '없음'}`];
+  if (r.sources.length) lines.push('찾은 위치: ' + r.sources.join(', '));
+  const missing = WD.SCHEMA.filter(s => s.src !== 'ours' && !r.found.includes(s.key)).map(s => s.key);
+  if (r.kind !== 'ours' && missing.length) lines.push(`못 찾은 값 (그대로 둠): ${missing.join(', ')}`);
+  lines.push(...r.notes);
+  const m = $('importMsg'); m.hidden = false; m.textContent = lines.join('\n'); VV.lastImport = r; return r;
+}
+async function importSettingsFile(file) { try { const j = JSON.parse(await file.text()); applyImport(j); $('fileSec').open = true; } catch (e) { showErr('JSON 파일을 읽지 못했어요: ' + (e.message || e)); } }
+$('importFile').onchange = e => { importSettingsFile(e.target.files[0]); e.target.value = ''; };
+$('resetW').onclick = () => { Object.assign(W, structuredClone(WD.DEFAULTS)); MAP = WD.defaultMapping(); reindexMap(); saveW(); refreshUI(); };
+VV.applyImport = applyImport; VV.exportJSON = exportJSON; VV.engine = engine; VV.mapped = () => mapped;
+
 document.addEventListener('keydown', e => {
   if (e.target?.closest?.('input,textarea,select')) return;
-  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.ctrlKey || e.metaKey) return;
   if (e.key === 'h' || e.key === 'H') setClean(!document.body.classList.contains('clean'));
   if (e.key === 'Escape') setClean(false);
-  const i = '123456'.indexOf(e.key); if (i >= 0) setExpr(PRESETS[i][0]);
+  const d = e.code?.startsWith('Digit') ? +e.code.slice(5) : +e.key;
+  if (d === 1) engine.exitAll(now()); else if (d >= 2 && d <= 9 && engine.list[d - 2]) toggleExpr(engine.list[d - 2].Name);
 });
 let lastTap = 0;
 $('stage').addEventListener('pointerup', () => { const t = performance.now(); if (t - lastTap < 350 && document.body.classList.contains('clean')) setClean(false); lastTap = t; });
 document.addEventListener('dblclick', () => setClean(false));
 
 // ---------- 시작 ----------
-buildExprButtons();
-resize();
-requestAnimationFrame(loop);
+refreshUI(); buildExprButtons(); resize(); requestAnimationFrame(loop);
 (async () => {
   let ok = false;
   if (params.get('vrm')) ok = await loadVRM(params.get('vrm'), params.get('vrm'));
-  if (!ok && params.get('default') !== '1') {
-    try { const saved = await idbGet(); if (saved?.buf) ok = await loadVRM(saved.buf, saved.name); } catch {}
-  }
+  if (!ok && params.get('default') !== '1') { try { const saved = await idbGet(); if (saved?.buf) ok = await loadVRM(saved.buf, saved.name); } catch {} }
   if (!ok) await loadVRM(DEFAULT_VRM, '기본');
-  if (params.get('demo') === '1') startDemo();
-  else if (params.get('autostart') === '1') startCamera();
+  if (params.get('demo') === '1') startDemo(); else if (params.get('autostart') === '1') startCamera();
 })();
