@@ -51,3 +51,12 @@ body.clean #panel,body.clean #hud,body.clean #video,body.clean #panelToggle{disp
 #expr small{opacity:.6;font-size:10px}
 
 body.fixedres #c{object-fit:contain}
+/* v5 퍼펙트싱크 표 */
+.pstab{font-size:10.5px}.pstab td{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:96px}
+.pstab td.miss,.pstab tr.missrow td:first-child{color:#ff7a7a}.pstab td.ok{color:#8fd18f}
+.pstab input{width:38px!important}
+.pslist{max-height:160px;overflow:auto;white-space:pre;font-size:10.5px}
+.psm{position:relative;display:inline-block;width:42px;height:10px;background:#222;border-radius:3px;overflow:hidden;vertical-align:middle}
+.psm .bi{position:absolute;left:0;top:0;height:5px;background:#888;width:0}
+.psm .bo{position:absolute;left:0;bottom:0;height:5px;background:#6cf;width:0}
+.ps-miss{color:#ffb4b4}

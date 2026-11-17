@@ -154,6 +154,17 @@
 | **light direction** / 조명 방향(°) | -25 | -90 ~ 90 (UI 범위) | Warudo에 없음, v1 동작 유지 | 우리 전용 | - |
 | **camera preview** / 카메라 미리보기 | 꺼짐 | 켬/끔 | Warudo에 없음, v1 동작 유지 | 우리 전용 | - |
 
+## 퍼펙트싱크 (v5)
+| 항목 | 기본값 | 뜻 | 근거 |
+|---|---|---|---|
+| **BlendShapeMappingType** / 퍼펙트싱크 | Auto | Auto / ARKit(켜기) / VRM(끄기). Auto는 ARKit 셰이프를 26개(절반) 이상 찾으면 ARKit | 이름·선택지는 실측, 26개 기준은 추정 |
+| 셰이프별 게인 / 오프셋 | 1 / 0 | 매핑 표 → (중립 빼기) → × 게인 + 오프셋 → 0~1 | 우리 전용 (기본값 = Warudo와 같음) |
+| 중립 얼굴 보정 | 없음 | 무표정 2초 평균을 각 셰이프에서 빼고 0~1로 다시 늘림 (`(v − n)/(1 − n)`), 시선 eyeLook* 제외 | 우리 전용 |
+
+- 연결: ARKit 이름 → 같은 이름 VRM 표정(VRM1 custom / VRM0 blendShapeGroups), 없으면 메시 블렌드쉐이프를 직접. 표정이 같은 블렌드쉐이프를 쓰고 있으면 둘 중 큰 값.
+- 이름 맞추기 순서: 정확히 같은 이름 → 대소문자 무시 → 변형(구분자·L/R·접두사) 정규화. (우리 전용)
+- Warudo ARKit 매핑 Blueprint 자체는 이번 자료(VRM 매핑 씬)에 없어서, "같은 이름에 1:1"은 Warudo 문서 설명 기준 추정.
+
 ## 입 따라하기 확장 (v4, 우리 전용)
 Warudo VRM 그래프의 입 공식(aa·ih·ou·oh, 제약 4개)을 그대로 기본으로 두고, 그 위에 덧붙였어요. **입 방식 = Warudo** 이면 Warudo와 같은 결과(ee·입꼬리·입 다물기 없음, 입 부드럽게 = BlendShape Smooth 0.2초).
 
@@ -182,7 +193,7 @@ Warudo VRM 그래프의 입 공식(aa·ih·ou·oh, 제약 4개)을 그대로 기
 ## 아직 확인 못 한 것 (추정으로 남음)
 - 트래커 안쪽 계산: 매핑·민감도 적용 순서, 머리 이동/회전 강도 적용 위치, Body Rotation 분배, 눈동자 각도 배율(우리: 휴머노이드 눈 기본 범위 좌우 20°·위 15°·아래 10°), ARKit 시선 → VRM Look 변환 방식(양눈 평균).
 - Constrain BlendShape·Smooth 노드 내부 계산, 대기 동작의 움직임 모양, Look At 노드의 Smooth 시간 의미(속도로 처리).
-- ARKit(Perfect Sync) 아바타용 Blueprint: 이번 씬은 VRM 매핑이라 확인 못 함.
+- ARKit(Perfect Sync) 아바타용 Blueprint: 이번 씬은 VRM 매핑이라 확인 못 함. v5는 같은 이름 1:1 + 셰이프별 보정으로 구현.
 - VRM 0.x 아바타의 표정 이름(Joy/Sorrow/Fun)과 오버라이드 처리: 이번 아바타는 VRM 1.0.
 - 실제 움직임 비교(같은 얼굴 움직임 → 같은 결과)는 아직 안 함. 화면 비교 자료가 필요해요.
 

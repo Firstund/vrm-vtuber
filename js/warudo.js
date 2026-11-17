@@ -340,9 +340,56 @@ export function importVrmExpressions(names, opt = {}) {
 }
 // ARKit(Perfect Sync) 자동 감지: 모델 표정 이름 중 ARKit 이름이 절반(26개) 이상이면 ARKit (기준 inferred)
 export function detectMapping(names) {
-  const set = new Set(names.map(n => n.toLowerCase()));
-  const hit = ARKIT.filter(n => set.has(n.toLowerCase())).length;
-  return { type: hit >= 26 ? 'ARKit' : 'VRM', hit };
+  const hit = Object.keys(matchPerfectSync(names).map).length;
+  return { type: hit >= PS_AUTO_MIN ? 'ARKit' : 'VRM', hit };
+}
+
+// ---- 퍼펙트싱크 (v5, 우리 확장 / Warudo ARKit 매핑과 같은 1:1 연결) ----
+// 아바타 셰이프 이름의 흔한 변형을 ARKit 52 이름에 맞춤:
+//   대소문자, 구분자(_ - . 공백), 끝의 _L/_R·L/R → Left/Right, 접두사(blendShape1. / BS_ / ARKit_ 등 → 뒤쪽이 ARKit 이름이면 인정)
+export const PS_AUTO_MIN = 26; // Auto: 52개 중 절반 이상 찾으면 ARKit(퍼펙트싱크) 경로 (우리 기준, inferred)
+const CANON = n => n.toLowerCase().replace(/[^a-z0-9]/g, '');
+const ARKIT_CANON = Object.fromEntries(ARKIT.map(n => [CANON(n), n]));
+const ARKIT_CANON_KEYS = Object.keys(ARKIT_CANON).sort((a, b) => b.length - a.length);
+export function canonShape(name) {
+  let s = String(name ?? '');
+  const dot = s.lastIndexOf('.'); if (dot >= 0 && s.length - dot > 3) s = s.slice(dot + 1); // blendShape1.eyeBlinkLeft → eyeBlinkLeft (끝이 .L 같은 짧은 건 유지)
+  s = s.replace(/[_\-. ]([LRlr])$/, (m, c) => (c.toUpperCase() === 'L' ? 'Left' : 'Right')).replace(/([a-z0-9])([LR])$/, (m, a, c) => a + (c === 'L' ? 'Left' : 'Right'));
+  return CANON(s);
+}
+// 이름 하나 → ARKit 이름 (없으면 null)
+export function arkitOf(name) {
+  const c = canonShape(name);
+  if (ARKIT_CANON[c]) return ARKIT_CANON[c];
+  for (const k of ARKIT_CANON_KEYS) if (c.endsWith(k) && c.length - k.length <= 14) { const pre = c.slice(0, c.length - k.length); if (/^(blendshape\d*|blendshapes|bs|arkit|ps|perfectsync|face|facial|head|body|shape|morph|exp|mesh\d*|[a-z]{0,4}\d*)$/.test(pre)) return ARKIT_CANON[k]; }
+  return null;
+}
+// names(표정 이름 또는 블렌드쉐이프 이름 목록) → { map: {arkit: 원래이름}, hit, missing }. 정확히 같은 이름 우선
+export function matchPerfectSync(names, already = {}) {
+  const map = { ...already }; const exact = new Map(); for (const n of names) if (!exact.has(String(n).toLowerCase())) exact.set(String(n).toLowerCase(), n);
+  for (const a of ARKIT) if (!map[a] && names.includes(a)) map[a] = a;
+  for (const a of ARKIT) if (!map[a] && exact.has(a.toLowerCase())) map[a] = exact.get(a.toLowerCase());
+  for (const n of names) { const a = arkitOf(n); if (a && !map[a]) map[a] = n; }
+  const missing = ARKIT.filter(a => !map[a]);
+  return { map, hit: ARKIT.length - missing.length, missing };
+}
+// 셰이프별 보정: 중립 얼굴 빼기 → × 게인 + 오프셋 → 0~1 (기본 게인 1·오프셋 0·중립 0 = Warudo와 같음)
+export function defaultPSCal() { return { gain: {}, offset: {}, neutral: {} }; }
+export function psCalibrate(bs, cal, clamp = true) {
+  const out = {};
+  for (const n of ARKIT) {
+    let v = bs[n] || 0; const nz = cal?.neutral?.[n] || 0;
+    if (nz > 0 && nz < 0.95) v = Math.max(0, (v - nz) / (1 - nz));
+    v = v * (cal?.gain?.[n] ?? 1) + (cal?.offset?.[n] ?? 0);
+    out[n] = clamp ? clamp01(v) : v;
+  }
+  return out;
+}
+// 중립 얼굴 표본들 → 셰이프별 평균 (시선 eyeLook*은 시선 보정이 따로 있어서 제외)
+export function neutralFrom(samples) {
+  const nz = {}; if (!samples.length) return nz;
+  for (const n of ARKIT) { if (n.startsWith('eyeLook')) continue; const m = samples.reduce((a, s) => a + (s[n] || 0), 0) / samples.length; if (m > 0.005) nz[n] = +m.toFixed(4); }
+  return nz;
 }
 
 // ---- Warudo 씬/프로필 JSON 가져오기 ----

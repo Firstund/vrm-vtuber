@@ -166,3 +166,31 @@ test('findMouthChannels / sideWeight', () => {
   assert.deepEqual(WD.sideWeight(5, 0, 1), [1, 0]); assert.deepEqual(WD.sideWeight(-5, 0, 1), [0, 1]);
 });
 test('표정 단축키 40개까지', () => { assert.ok(WD.HOTKEY_KEYS.length >= 40); assert.equal(new Set(WD.HOTKEY_KEYS).size, WD.HOTKEY_KEYS.length); });
+
+// ---- v5: 퍼펙트싱크 (ARKit 52) ----
+test('arkitOf: 이름 변형 대응', () => {
+  const cases = { eyeBlinkLeft: 'eyeBlinkLeft', EyeBlink_L: 'eyeBlinkLeft', 'blendShape1.eyeBlink_L': 'eyeBlinkLeft', BS_mouthSmileRight: 'mouthSmileRight', eye_blink_left: 'eyeBlinkLeft',
+    MOUTH_SMILE_R: 'mouthSmileRight', 'ARKit.jawOpen': 'jawOpen', tongue_out: 'tongueOut', mouthSmileL: 'mouthSmileLeft', 'eyeBlink.L': 'eyeBlinkLeft', JawOpen: 'jawOpen', 'blendShape2.mouthRollUpper': 'mouthRollUpper', cheekPuff: 'cheekPuff' };
+  for (const [k, v] of Object.entries(cases)) assert.equal(WD.arkitOf(k), v, k);
+  for (const k of ['happy_mouth', 'aa', 'Fcl_MTH_A', 'blink', 'EA_aa', 'jawOpenX', 'mouth']) assert.equal(WD.arkitOf(k), null, k);
+});
+test('matchPerfectSync: 52개 / 정확한 이름 우선 / 누락', () => {
+  assert.equal(WD.matchPerfectSync(WD.ARKIT).hit, 52);
+  assert.equal(WD.matchPerfectSync(['EyeBlinkLeft', 'eyeBlinkLeft']).map.eyeBlinkLeft, 'eyeBlinkLeft');
+  const r = WD.matchPerfectSync(['blendShape1.jawOpen', 'aa']); assert.equal(r.hit, 1); assert.equal(r.missing.length, 51);
+  assert.equal(WD.detectMapping(WD.ARKIT.slice(0, 26)).type, 'ARKit'); assert.equal(WD.detectMapping(WD.ARKIT.slice(0, 25)).type, 'VRM');
+  assert.equal(WD.detectMapping(['aa', 'ih', 'blink']).type, 'VRM');
+});
+test('psCalibrate: 기본값은 그대로, 중립·게인·오프셋', () => {
+  const bs = Object.fromEntries(WD.ARKIT.map((n, i) => [n, (i % 10) / 10]));
+  const same = WD.psCalibrate(bs, WD.defaultPSCal()); for (const n of WD.ARKIT) near(same[n], bs[n]);
+  const c = { gain: { jawOpen: 2 }, offset: { mouthClose: 0.1 }, neutral: { mouthSmileLeft: 0.2 } };
+  const o = WD.psCalibrate({ jawOpen: 0.3, mouthClose: 0, mouthSmileLeft: 0.2 }, c);
+  near(o.jawOpen, 0.6); near(o.mouthClose, 0.1); near(o.mouthSmileLeft, 0);
+  near(WD.psCalibrate({ mouthSmileLeft: 0.6 }, c).mouthSmileLeft, 0.5);
+  near(WD.psCalibrate({ jawOpen: 0.8 }, c).jawOpen, 1); // 0~1 제한
+});
+test('neutralFrom: 평균, 시선 제외', () => {
+  const nz = WD.neutralFrom([{ jawOpen: 0.1, eyeLookInLeft: 0.5 }, { jawOpen: 0.3, eyeLookInLeft: 0.5 }]);
+  near(nz.jawOpen, 0.2); assert.equal(nz.eyeLookInLeft, undefined);
+});

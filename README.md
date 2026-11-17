@@ -18,6 +18,18 @@ python3 -m http.server 8765
 - 주소에 `?vrm=경로.vrm` 로 같은 폴더의 다른 파일을 열 수도 있어요. `?default=1` 은 기억한 아바타 무시.
 - 로컬 테스트용 개인 아바타: `assets-local/avatar.vrm`(내 아바타), `assets-local/reference.vrm`(기준 아바타)에 넣으면 그 파일이 있을 때만 버튼이 생기고, 기억한 아바타가 없으면 `avatar.vrm`을 먼저 열어요. 이 폴더는 `.gitignore`로 저장소·배포에서 빠져요. 휴대폰·Pages에서는 **📂 VRM 불러오기**로 한 번 고르면 기억해요.
 
+## v5: 퍼펙트싱크 (ARKit 52 표정)
+v4는 git 태그 `v4`. MediaPipe가 주는 52개 얼굴 값(ARKit 이름)을 아바타의 같은 이름 셰이프에 **1:1**로 보내요 (Warudo의 ARKit 매핑과 같은 방식).
+- **찾는 곳**: VRM 1.0 custom 표정 · VRM 0.x blendShapeGroups · 메시 블렌드쉐이프(morph target) 직접. 표정이 있으면 표정 우선.
+- **이름 변형**: 대소문자, `_ - . 공백`, 끝의 `_L/_R`·`L/R` ↔ `Left/Right`, 접두사(`blendShape1.` `BS_` `ARKit_` 등). 예: `blendShape1.eyeBlink_L`, `MOUTH_SMILE_R`, `EyeBlinkRight` → 모두 인식.
+- **설정 "퍼펙트싱크 (52 표정)"**: 자동 감지(52개 중 26개 이상 찾으면 켬) / 켜기 / 끄기, 찾은 수·누락 목록, 찾은 이름 목록, 52개 각각 **게인·오프셋**, 실시간 값 막대(회색 추적값 / 파랑 보낸 값), **😐 중립 얼굴 보정**(무표정 2초 평균을 빼 줌). 보정값은 이 브라우저 localStorage(`vv_ps_cal`)에 저장, 설정 내보내기 JSON에도 들어가요.
+- 기본값(게인 1, 오프셋 0, 중립 없음)은 Warudo와 같아요. 그 앞의 "개별 블렌드쉐이프 매핑" 표(실제 Warudo 초기 매핑)가 먼저 적용돼요.
+- **52개가 없는 아바타**는 자동으로 v4 입 따라하기(VRM aa/ih/ou/ee/oh + 한쪽 입꼬리)로. 퍼펙트싱크인데 jawOpen이나 깜빡임 셰이프만 없으면 그 부분만 VRM 방식으로 채워요.
+- 혀(tongueOut)는 웹캠(MediaPipe)이 거의 인식하지 못해요 → 표정 단축키로 쓰세요.
+- Warudo 씬 파일을 가져오면 씬 값(BlendShape Mapping = VRM)이 들어와 퍼펙트싱크가 꺼져요. 다시 "자동 감지"나 "켜기"로 바꾸세요.
+- 시험 모델(직접 만든 단순 도형, CC0): `assets/test/ps52-*.vrm` (`tools/make_ps_test_vrm.py`로 생성). 주소 예: `?vrm=assets/test/ps52-vrm1-expr.vrm&demo=1`
+- 테스트: `node --test tests/warudo.test.mjs`, `python3 tools/tools_v5.py`
+
 ## v4: 입 따라하기 · OBS 출력 · 아바타 기억
 v3은 git 태그 `v3`. Warudo 그래프 값은 그대로 두고 그 위에 더했어요.
 - **입 따라하기 (설정 "입 따라하기")**: Warudo 공식(aa/ih/ou/oh)에 ee(에), 입 다물기, **한쪽 입꼬리**(미소·찡그림 좌우 따로)를 더함. 입만 따로 짧은 부드럽게(기본 0.06초), 입 반응 크기·입 모양 다양성 조절. "입 방식 = Warudo"면 Warudo와 같음.
