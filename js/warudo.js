@@ -59,6 +59,12 @@ export const SCHEMA = [
  { sec: 'bp', key: 'IdleMaxLookAroundAngle', en: 'Max Look Around Angle', ko: '대기 둘러보기 최대각(°)', type: 'num', min: 0, max: 45, step: 0.5, def: 10, src: 'real' },
  { sec: 'bp', key: 'IdleHeadTilt', en: 'Head Tilt', ko: '대기 머리 기울기(°)', type: 'vec3', min: -45, max: 45, step: 0.5, def: [0, 0, 0], src: 'real' },
  { sec: 'bp', key: 'SmoothingMode', en: 'smoothing method', ko: '부드럽게 방식', type: 'enum', opts: [['Warudo', 'Warudo 그래프와 같게'], ['OneEuro', '우리 방식 (반응 빠름)']], def: 'Warudo', src: 'ours' },
+ // 입 (우리 전용 확장: Warudo VRM 그래프 공식 위에 더함. 다양성 0·감도 1·부드럽게 0.2 = Warudo 그대로)
+ { sec: 'mouth', key: 'MouthMode', en: 'mouth mapping', ko: '입 매핑 방식', type: 'enum', opts: [['Extended', '확장 (Warudo 공식 + 이 아바타의 입 모양 더 쓰기)'], ['Warudo', 'Warudo 그래프 그대로']], def: 'Extended', src: 'ours' },
+ { sec: 'mouth', key: 'MouthGain', en: 'mouth sensitivity', ko: '입 감도 (모음 세기 배율)', type: 'num', min: 0.5, max: 2.5, step: 0.05, def: 1, src: 'ours' },
+ { sec: 'mouth', key: 'MouthVariety', en: 'mouth shape variety', ko: '입 모양 다양성 (에·미소·찡그림·입 다물기)', type: 'num', min: 0, max: 1.5, step: 0.05, def: 1, src: 'ours' },
+ { sec: 'mouth', key: 'MouthSmoothTime', en: 'mouth smooth time', ko: '입 부드럽게(초, 작을수록 빠름)', type: 'num', min: 0, max: 0.4, step: 0.01, def: 0.06, src: 'ours' },
+ { sec: 'mouth', key: 'MouthAsymmetry', en: 'one-sided mouth', ko: '한쪽 입꼬리 반영 (좌우 따로)', type: 'bool', def: true, src: 'ours' },
  // Character Look At Target 노드 (실제 씬의 얼굴 추적 Blueprint에 있음, 대상 = Camera 1)
  { sec: 'look', key: 'LookAtNodeWeight', en: 'Weight', ko: '눈맞춤 세기 (실제 씬: 추적 상태에 연결됨 → 추적 중 1)', type: 'num', min: 0, max: 1, step: 0.05, def: 1, src: 'real' },
  { sec: 'look', key: 'LookAtNodeHeadWeight', en: 'Head Weight', ko: '머리 비중', type: 'num', min: 0, max: 1, step: 0.01, def: 0.66, src: 'real' },
@@ -162,6 +168,42 @@ export function vrmFromArkit(bs, cfg = {}) {
   for (const [c, t] of VRM_GRAPH_CONSTRAINTS) constrain(v, c, t);
   return v;
 }
+// ---- 확장 입 매핑 (우리 전용, inferred) ----
+// ARKit 입 셰이프가 없는 VRM 아바타용. Warudo 그래프의 aa/ih/ou/oh를 그대로 두고 그 위에:
+//  ee = 입 벌린 채 옆으로 당김(mouthStretch), smile/frown = 좌우 따로(입꼬리), 입 다물기(mouthClose·Press·Roll)는 벌린 모음을 줄임.
+//  MouthVariety 0, MouthGain 1이면 Warudo 결과와 같음.
+export function mouthExtended(bs, cfg = {}) {
+  const g = n => bs[n] || 0;
+  const V = cfg.MouthMode === 'Warudo' ? 0 : (cfg.MouthVariety ?? 1), G = cfg.MouthMode === 'Warudo' ? 1 : (cfg.MouthGain ?? 1);
+  const w = vrmFromArkit(bs, cfg);
+  const jaw = g('jawOpen');
+  const close = clamp01(g('mouthClose') * 2.5 + (g('mouthPressLeft') + g('mouthPressRight')) * 0.6 + (g('mouthRollLower') + g('mouthRollUpper')) * 0.6) * Math.min(1, V);
+  const open = 1 - close;
+  const o = { aa: w.aa * open, ih: w.ih * open, ou: w.ou * (1 - close * 0.5), oh: w.oh * open, ee: 0 };
+  // '이'는 미소+당김, '에'는 당김만 → 미소가 클수록 ee를 줄여 ih와 구분
+  o.ee = clamp01((g('mouthStretchLeft') + g('mouthStretchRight')) * 1.5 * clamp01(jaw * 5) * (1 - clamp01((g('mouthSmileLeft') + g('mouthSmileRight')) * 0.75))) * V * open;
+  for (const k of ['aa', 'ih', 'ou', 'oh', 'ee']) o[k] = clamp01(o[k] * G);
+  if (V > 0) { constrain(o, 'aa', ['ee'], 0, 1, 1, 0.3); const sum = o.aa + o.ih + o.ou + o.oh + o.ee; if (sum > 1.3) for (const k of ['aa', 'ih', 'ou', 'oh', 'ee']) o[k] *= 1.3 / sum; }
+  // 입꼬리: 벌린 입(aa)이 클수록 줄여서 모음과 덜 겹치게
+  const keep = 1 - 0.5 * o.aa;
+  let sL = clamp01((g('mouthSmileLeft') * 1.3 - 0.05)) * V * keep, sR = clamp01((g('mouthSmileRight') * 1.3 - 0.05)) * V * keep;
+  let fL = clamp01(g('mouthFrownLeft') * 1.5) * V, fR = clamp01(g('mouthFrownRight') * 1.5) * V;
+  if (cfg.MouthAsymmetry === false) { sL = sR = (sL + sR) / 2; fL = fR = (fL + fR) / 2; }
+  // smileOpen: 미소를 '벌린 입 미소'로 보일 비율 (나머지는 '다문 입 미소')
+  // 윗입술 올림(mouthUpperUp, 이가 보이는 미소)도 '벌린 미소'로
+  const smileOpen = clamp01(Math.max((jaw - 0.08) * 4, ((g('mouthUpperUpLeft') + g('mouthUpperUpRight')) / 2 - 0.25) * 2.5)) * open;
+  Object.assign(o, { smileL: clamp01(sL), smileR: clamp01(sR), frownL: clamp01(fL), frownR: clamp01(fR), close, smileOpen });
+  return o;
+}
+// 입 관련 표정 찾기 (이름 규칙, inferred): smile = *happy_mouth / *smile_mouth, frown = *sad_mouth, 혀 = *tongue*
+export function findMouthChannels(names) {
+  const f = re => names.find(n => re.test(n)) || null;
+  // smile = 벌린 입 미소(happy), smileClosed = 다문 입 미소(relaxed). 둘 다 있으면 입 벌림 정도로 섞음
+  return { smile: f(/(^|_)(happy|smile)_?mouth$|^mouth_?smile$/i), smileClosed: f(/(^|_)relaxed_?mouth$|^mouth_?smile_?closed$/i), frown: f(/(^|_)(sad|frown)_?mouth$|^mouth_?frown$/i), tongue: names.filter(n => /tongue|베롱|혀/i.test(n)) };
+}
+// 표정 하나를 좌우로 나눈 블렌드쉐이프 가중치: x(아바타 왼쪽 +) 기준으로 가운데에서 부드럽게 나눔. 합은 항상 1
+export function sideWeight(x, mid, width) { const t = clamp01((x - mid) / (width || 1e-6) + 0.5); const sm = t * t * (3 - 2 * t); return [sm, 1 - sm]; }
+
 // ---- Smooth 노드 (SmoothTime): Unity SmoothDamp와 같은 임계 감쇠 (이름이 같아 SmoothDamp로 추정, inferred) ----
 export function smoothDamp(cur, target, st, smoothTime, dt) {
   smoothTime = Math.max(0.0001, smoothTime);
@@ -283,7 +325,9 @@ export function clampLookAngle(angleDeg, clampWeight, smoothing = 2) {
 export const VRM_PRESET_NAMES = { happy: 'Joy', angry: 'Angry', sad: 'Sorrow', relaxed: 'Fun', surprised: 'Surprised' };
 const NON_EXPR = new Set(['aa', 'ih', 'ou', 'ee', 'oh', 'blink', 'blinkLeft', 'blinkRight', 'lookUp', 'lookDown', 'lookLeft', 'lookRight', 'neutral']);
 // 표정 단축키 (real: 온보딩이 만든 Expression Key Bindings 그래프) — Alt + 1 2 … 0 - = Q W E R T Y U I O P [ , Alt+Backspace = 모두 끄기
-export const HOTKEY_KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '['];
+export const HOTKEY_KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '[',
+  // 24번째부터는 실제 자료(23개)에 없어서 키보드 순서대로 이어 붙임 (inferred)
+  ']', 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', ';', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', ',', '.'];
 export function importVrmExpressions(names, opt = {}) {
   const vrm0 = opt.vrm0 === undefined ? false : opt.vrm0, ov = opt.overrides || {};
   const list = []; let layer = 1;

@@ -1,17 +1,18 @@
-// 3D VTuber (VRM) v3 — Warudo 설정 호환 (실제 Warudo 0.15.1 씬 자료로 검증). three.js + @pixiv/three-vrm + MediaPipe FaceLandmarker. 모든 처리는 브라우저 안에서만.
+// 3D VTuber (VRM) v4 — Warudo 설정 호환 (실제 Warudo 0.15.1 씬 자료로 검증) + 입 따라하기 확장. three.js + @pixiv/three-vrm + MediaPipe FaceLandmarker. 모든 처리는 브라우저 안에서만.
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
 import { FilterBank } from './filter.js';
 import { loadTracker, detect, tracker } from './tracker.js';
 import { mic, startMic, micTick } from './mic.js';
-import * as WD from './warudo.js?v=3';
+import * as WD from './warudo.js?v=4';
 
 const $ = id => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 const DEFAULT_VRM = 'assets/FirstundHoodieBoy_v2_VRM0.vrm';
 // 로컬 테스트 전용 아바타 (git에 올리지 않음, .gitignore의 assets-local/). 파일이 있을 때만 버튼이 보임
-const LOCAL_AVATARS = [{ path: 'assets-local/avatar.vrm', label: '로컬 아바타 (테스트)' }];
+const LOCAL_AVATARS = [{ path: 'assets-local/avatar.vrm', label: '내 아바타 (로컬)' }, { path: 'assets-local/reference.vrm', label: '기준 아바타 (로컬)' }];
+const headOk = async p => { try { return (await fetch(p, { method: 'HEAD' })).ok; } catch { return false; } };
 const D2R = Math.PI / 180, R2D = 180 / Math.PI;
 const clamp01 = v => Math.max(0, Math.min(1, v));
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -48,6 +49,7 @@ const SECS = [
   ['bp', 'Face Tracking Blueprint', '얼굴 추적 Blueprint (온보딩이 만든 그래프)'],
   ['look', 'Look At (Character Look At Target)', '카메라 눈맞춤'],
   ['char', 'Character', '캐릭터 에셋'],
+  ['mouth', 'mouth (ours)', '입 따라하기 (우리 확장)'],
   ['cam', 'Camera', '카메라 에셋'],
   ['ours', 'extras', '우리 전용 (Warudo에 없음)'],
 ];
@@ -137,7 +139,10 @@ const dirLight = new THREE.DirectionalLight(0xffffff, Math.PI);
 const ambLight = new THREE.AmbientLight(0xffffff, 0.6);
 scene.add(dirLight, ambLight, dirLight.target);
 function applyLight() { const a = (W.lightDir || 0) * D2R; dirLight.position.set(Math.sin(a) * 2, 2.2, Math.cos(a) * 2); dirLight.intensity = Math.PI * W.light; ambLight.intensity = 0.6 * W.light; }
-function resize() { const r = $('stage').getBoundingClientRect(); const w = Math.max(1, r.width), h = Math.max(1, r.height); renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix(); frameCamera(); }
+// OBS용 고정 해상도: ?res=1920x1080 → 그 픽셀 수로 렌더하고 화면에 맞춰 늘림
+const FIXED = (params.get('res') || '').match(/^(\d{3,4})x(\d{3,4})$/);
+if (FIXED) document.body.classList.add('fixedres');
+function resize() { const r = $('stage').getBoundingClientRect(); const w = FIXED ? +FIXED[1] : Math.max(1, r.width), h = FIXED ? +FIXED[2] : Math.max(1, r.height); renderer.setPixelRatio(FIXED ? 1 : Math.min(2, window.devicePixelRatio || 1)); renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix(); frameCamera(); }
 new ResizeObserver(resize).observe($('stage'));
 
 // ---------- 카메라 구도 (우리 전용) ----------
@@ -211,9 +216,41 @@ async function loadVRM(src, name) {
   const saved = VV.urlExpr || LS.get(EXPR_KEY, null);
   engine.st.clear(); engine.setList(saved ? mergeExpr(imported, saved) : imported);
   VV.loaded = true; VV.avatar = { title, version: meta.metaVersion, has, mapping: det, expressions: engine.list.map(e => e.Name), hotkeys: engine.list.map(e => e.Hotkey), lookAt: rig.lookType, eyeBones: rig.eyes, disable: engine.list.map(e => [e.Name, e.DisableEyeBlinkTracking, e.DisableMouthTracking]) };
+  setupMouth();
+  VV.avatar.mouth = { channels: rig.mouth.names, split: rig.mouth.split, tongue: rig.mouth.tongue, arkitMouth: Object.keys(rig.arkitName).filter(n => /^(mouth|jaw|tongue|cheek)/.test(n)).length };
+  if (typeof src === 'string') LS.set('vv_last_src', src);
   buildExprButtons(); buildExprEditor(); frameCamera(); status(mode === 'demo' ? '데모 모드' : mode === 'track' ? `추적 중 (${tracker.delegate})` : '대기 중');
   return true;
 }
+// ---------- 입 채널 (우리 확장) ----------
+// 입꼬리 표정(smile/frown)의 블렌드쉐이프를 아바타 왼쪽·오른쪽 절반으로 나눈 사본을 메모리에서만 만들어 한쪽 입꼬리를 표현 (원본 파일은 그대로)
+function setupMouth() {
+  const em = vrm.expressionManager; const ch = WD.findMouthChannels(rig.names);
+  rig.mouth = { names: { smile: ch.smile, smileClosed: ch.smileClosed, frown: ch.frown }, tongue: ch.tongue, split: {}, parts: {} };
+  for (const key of ['smile', 'smileClosed', 'frown']) {
+    const ex = ch[key] && em.getExpression(ch[key]); if (!ex) continue;
+    const parts = [];
+    for (const bind of ex._binds || []) {
+      if (bind.index === undefined || !bind.primitives) continue;
+      for (const mesh of bind.primitives) {
+        const g = mesh.geometry, mp = g.morphAttributes.position; if (!mp || !mp[bind.index]) continue;
+        const pos = g.attributes.position, d = mp[bind.index]; let minX = 1e9, maxX = -1e9, sx = 0, n = 0;
+        for (let i = 0; i < d.count; i++) if (Math.abs(d.getX(i)) + Math.abs(d.getY(i)) + Math.abs(d.getZ(i)) > 1e-6) { const x = pos.getX(i); minX = Math.min(minX, x); maxX = Math.max(maxX, x); sx += x; n++; }
+        if (!n) continue;
+        const mid = (minX + maxX) / 2, width = Math.max(1e-4, (maxX - minX) * 0.25);
+        const add = side => { const arr = new Float32Array(d.count * 3); for (let i = 0; i < d.count; i++) { const w = WD.sideWeight(pos.getX(i), mid, width)[side]; arr[i * 3] = d.getX(i) * w; arr[i * 3 + 1] = d.getY(i) * w; arr[i * 3 + 2] = d.getZ(i) * w; } return new THREE.BufferAttribute(arr, 3); };
+        const addN = side => { const nm = g.morphAttributes.normal?.[bind.index]; if (!nm) return null; const arr = new Float32Array(nm.count * 3); for (let i = 0; i < nm.count; i++) { const w = WD.sideWeight(pos.getX(i), mid, width)[side]; arr[i * 3] = nm.getX(i) * w; arr[i * 3 + 1] = nm.getY(i) * w; arr[i * 3 + 2] = nm.getZ(i) * w; } return new THREE.BufferAttribute(arr, 3); };
+        const iL = mp.length; mp.push(add(0)); mp.push(add(1));
+        if (g.morphAttributes.normal) { const nl = addN(0), nr = addN(1); if (nl && nr) g.morphAttributes.normal.push(nl, nr); else delete g.morphAttributes.normal; }
+        mesh.morphTargetInfluences.push(0, 0);
+        mesh.morphTargetDictionary[`${ch[key]}__L`] = iL; mesh.morphTargetDictionary[`${ch[key]}__R`] = iL + 1;
+        parts.push({ mesh, iL, iR: iL + 1, w: bind.weight ?? 1 });
+      }
+    }
+    if (parts.length) { rig.mouth.parts[key] = parts; rig.mouth.split[key] = parts.length; }
+  }
+}
+function setSide(key, l, r) { for (const p of rig.mouth.parts[key] || []) { p.mesh.morphTargetInfluences[p.iL] = clamp01(l) * p.w; p.mesh.morphTargetInfluences[p.iR] = clamp01(r) * p.w; } }
 // 가져온 표정 설정을 현재 아바타 표정에 이름으로 맞춤 (Joy ↔ happy 등)
 function mergeExpr(base, incoming) {
   const out = base.map(e => ({ ...e }));
@@ -235,7 +272,7 @@ async function loadFile(file) {
   if (await loadVRM(buf, file.name)) { try { await idbPut({ name: file.name, buf }); } catch {} }
 }
 $('vrmFile').onchange = e => loadFile(e.target.files[0]);
-$('vrmDefault').onclick = async () => { await idbPut(null).catch(() => {}); loadVRM(DEFAULT_VRM, '기본'); };
+$('vrmDefault').onclick = async () => { await idbPut(null).catch(() => {}); LS.set('vv_last_src', null); loadVRM(DEFAULT_VRM, '기본'); };
 if (params.get('default') !== '1') for (const a of LOCAL_AVATARS) fetch(a.path, { method: 'HEAD' }).then(r => { if (!r.ok) return; const b = el('button', { class: 'localav' }, a.label); b.onclick = async () => { await idbPut(null).catch(() => {}); loadVRM(a.path, a.label); }; $('vrmDefault').after(b); VV.localAvatars = (VV.localAvatars || []).concat(a.path); }).catch(() => {});
 { let dc = 0; const drop = $('drop');
   addEventListener('dragenter', e => { e.preventDefault(); dc++; drop.hidden = false; });
@@ -287,10 +324,10 @@ let mode = 'idle', faceSeen = -1e9, lastVideoTime = -1, autoCalibAt = 0;
 let neutral = PS.calib2 ? { q: new THREE.Quaternion().fromArray(PS.calib2.q), t: new THREE.Vector3().fromArray(PS.calib2.t), gx: PS.calib2.gx || 0, gy: PS.calib2.gy || 0 } : null;
 let lastRaw = null;
 // 그룹: bone(머리 회전·눈 뼈, Smooth Rotations) / root(위치, Smooth Position) / bs(블렌드쉐이프, Smooth BlendShapes)
-const GROUP = { hx: 'bone', hy: 'bone', hz: 'bone', gx: 'bone', gy: 'bone', px: 'root', py: 'root', pz: 'root' };
-const tgt = { hx: 0, hy: 0, hz: 0, px: 0, py: 0, pz: 0, eL: 0, eR: 0, gx: 0, gy: 0, aa: 0, ih: 0, ou: 0, ee: 0, oh: 0, lu: 0, ld: 0, ll: 0, lr: 0, bu: 0, bd: 0, happy: 0, angry: 0, sad: 0, relaxed: 0, surprised: 0 };
+const GROUP = { hx: 'bone', hy: 'bone', hz: 'bone', gx: 'bone', gy: 'bone', px: 'root', py: 'root', pz: 'root', aa: 'mouth', ih: 'mouth', ou: 'mouth', ee: 'mouth', oh: 'mouth', sL: 'mouth', sR: 'mouth', so: 'mouth', fL: 'mouth', fR: 'mouth' };
+const tgt = { hx: 0, hy: 0, hz: 0, px: 0, py: 0, pz: 0, eL: 0, eR: 0, gx: 0, gy: 0, aa: 0, ih: 0, ou: 0, ee: 0, oh: 0, sL: 0, sR: 0, so: 0, fL: 0, fR: 0, lu: 0, ld: 0, ll: 0, lr: 0, bu: 0, bd: 0, happy: 0, angry: 0, sad: 0, relaxed: 0, surprised: 0 };
 const cur = { ...tgt };
-let mapped = {}, mappedF = {}, vrmConv = {}; // Warudo 매핑 후 ARKit 값 / VRM 변환 값
+let mapped = {}, mappedF = {}, vrmConv = {}, mouthOut = {}; // Warudo 매핑 후 ARKit 값 / VRM 변환 값
 const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _p = new THREE.Vector3(), _s = new THREE.Vector3(), _e = new THREE.Euler(), _qi = new THREE.Quaternion();
 const avg = (bs, a, b) => ((bs[a] || 0) + (bs[b] || 0)) / 2;
 const gazeOf = bs => [((bs.eyeLookOutLeft || 0) + (bs.eyeLookInRight || 0) - (bs.eyeLookInLeft || 0) - (bs.eyeLookOutRight || 0)) / 2, ((bs.eyeLookUpLeft || 0) + (bs.eyeLookUpRight || 0) - (bs.eyeLookDownLeft || 0) - (bs.eyeLookDownRight || 0)) / 2];
@@ -322,7 +359,9 @@ function ingest(raw, tSec) {
   // 4) VRM 매핑: 실제 Warudo Blueprint의 변환 공식 그대로 (real)
   vrmConv = WD.vrmFromArkit(bs, W);
   tgt.eL = vrmConv.blinkLeft; tgt.eR = vrmConv.blinkRight;
-  tgt.aa = vrmConv.aa; tgt.ih = vrmConv.ih; tgt.ou = vrmConv.ou; tgt.oh = vrmConv.oh; tgt.ee = 0; // Warudo 그래프는 ee를 설정하지 않음
+  // 입: Warudo 공식(aa/ih/ou/oh) + 확장(ee·입꼬리 좌우·입 다물기). Warudo 모드면 Warudo 그래프와 같음 (ee 없음)
+  mouthOut = WD.mouthExtended(bs, W);
+  tgt.aa = mouthOut.aa; tgt.ih = mouthOut.ih; tgt.ou = mouthOut.ou; tgt.oh = mouthOut.oh; tgt.ee = mouthOut.ee; tgt.sL = mouthOut.smileL; tgt.sR = mouthOut.smileR; tgt.so = mouthOut.smileOpen; tgt.fL = mouthOut.frownL; tgt.fR = mouthOut.frownR;
   tgt.lu = vrmConv.LookUp; tgt.ld = vrmConv.LookDown; tgt.ll = vrmConv.LookLeft; tgt.lr = vrmConv.LookRight; tgt.bu = vrmConv['Brows up']; tgt.bd = vrmConv['Brows down'];
   // 5) 우리 전용: 표정 자동 인식
   const smile = avg(bs, 'mouthSmileLeft', 'mouthSmileRight'), jaw = bs.jawOpen;
@@ -427,13 +466,13 @@ function cameraAngles() { // 머리에서 카메라까지 방향 (아바타 공�
   return { yaw: Math.atan2(_v2.x, _v2.z) * R2D, pitch: -Math.atan2(_v2.y, Math.hypot(_v2.x, _v2.z)) * R2D }; // pitch +는 아래 (three-vrm/뼈 규칙)
 }
 function applyAvatar(t, dt) {
-  const tracking = (mode === 'track' || mode === 'demo') && t - faceSeen < 600; VV.tracking = tracking;
+  const tracking = (mode === 'track' || mode === 'demo' || mode === 'fake') && t - faceSeen < 600; VV.tracking = tracking;
   const s = t / 1000, ts = t / 1000;
   // 추적 상태 Switch (real: IsTracked → 블렌드쉐이프·회전 0.4초, 대기동작/눈맞춤/위치 가중치 2초, InOutSine)
   swBS.set(tracking, ts); swF.set(tracking, ts);
   const wBS = swBS.update(ts, W.LostTransitionTime), wF = swF.update(ts, W.IdleTransitionTime);
   if (warudoSmooth()) { // Switch → Smooth 노드 순서 (real 연결 순서)
-    for (const n in cur) { const g = GROUP[n]; const w = g === 'root' ? wF : wBS; const st = g === 'bone' ? W.BoneSmoothTime : g === 'root' ? W.RootSmoothTime : W.BlendShapeSmoothTime; cur[n] = sb.run(n, tgt[n] * w, st, dt); }
+    for (const n in cur) { const g = GROUP[n]; const w = g === 'root' ? wF : wBS; const st = g === 'bone' ? W.BoneSmoothTime : g === 'root' ? W.RootSmoothTime : g === 'mouth' ? (W.MouthMode === 'Warudo' ? W.BlendShapeSmoothTime : W.MouthSmoothTime) : W.BlendShapeSmoothTime; cur[n] = sb.run(n, tgt[n] * w, st, dt); }
   } else {
     const k = 1 - Math.exp(-dt / 0.035), kb = 1 - Math.exp(-dt / 0.02), kRelax = 1 - Math.exp(-dt / 0.5);
     for (const n in cur) { if (tracking) cur[n] += (tgt[n] - cur[n]) * (n === 'eL' || n === 'eR' ? kb : k); else cur[n] += (0 - cur[n]) * kRelax; }
@@ -534,16 +573,20 @@ function applyAvatar(t, dt) {
   const lv = mic.on ? mic.level : 0;
   const lipOn = lv > 0 && (W.LipSync === 'Always' || (W.LipSync === 'WhenTrackingLost' && !tracking));
   if (arkit) { // Perfect Sync: 매핑된 ARKit 값을 같은 이름 표정에 그대로 (그래프 미확인, inferred)
-    for (const n of WD.ARKIT) { const mn = rig.arkitName[n]; if (!mn) continue; let v = tracking || wBS > 0 ? (warudoSmooth() ? sb.run('ak_' + n, mappedF[n] * wBS, W.BlendShapeSmoothTime, dt) : mappedF[n]) : 0;
+    for (const n of WD.ARKIT) { const mn = rig.arkitName[n]; if (!mn) continue; const isMouth = /^(mouth|jaw|tongue|cheekPuff)/.test(n) && W.MouthMode !== 'Warudo'; let v = tracking || wBS > 0 ? (warudoSmooth() ? sb.run('ak_' + n, mappedF[n] * wBS * (isMouth ? W.MouthGain : 1), isMouth ? W.MouthSmoothTime : W.BlendShapeSmoothTime, dt) : mappedF[n]) : 0;
       if (n === 'eyeBlinkLeft') v = eL; else if (n === 'eyeBlinkRight') v = eR; else if (n.startsWith('mouth') || n.startsWith('jaw') || n === 'tongueOut' || n === 'cheekPuff') v *= fMouth; else if (n.startsWith('brow')) v *= fBrow;
       if (n === 'jawOpen' && lipOn) v = Math.max(v, lv * 0.8);
       em.setValue(mn, clamp01(v)); }
   } else { // VRM: 실제 Warudo 그래프 (blinkLeft/Right, aa/ih/ou/oh, LookUp/Down/Left/Right, Brows up/down)
     if (rig.has.blinkLeft && rig.has.blinkRight) { em.setValue('blinkLeft', clamp01(eL)); em.setValue('blinkRight', clamp01(eR)); if (rig.has.blink) em.setValue('blink', 0); }
     else if (rig.has.blink) em.setValue('blink', clamp01((eL + eR) / 2)); // 우리 대체 (Warudo는 blinkLeft/Right만)
-    let vis = { aa: cur.aa, ih: cur.ih, ou: cur.ou, ee: 0, oh: cur.oh };
+    let vis = { aa: cur.aa, ih: cur.ih, ou: cur.ou, ee: cur.ee, oh: cur.oh };
     if (lipOn) { const tot = vis.aa + vis.ih + vis.ou + vis.oh; if (lv > tot) { const wob = 0.5 + 0.5 * Math.sin(s * 13); vis.aa = Math.max(vis.aa, lv * (0.6 + 0.3 * wob)); vis.oh = Math.max(vis.oh, lv * 0.25 * (1 - wob)); } }
     for (const n in vis) if (rig.has[n]) em.setValue(n, clamp01(vis[n] * fMouth));
+    // 입꼬리 좌우 (확장): 아바타 왼쪽 = 사용자 왼쪽 (Mirrored Tracking이면 트래커에서 이미 바뀜)
+    const so = rig.mouth.parts.smileClosed ? (rig.mouth.parts.smile ? cur.so : 0) : 1;
+    setSide('smile', cur.sL * fMouth * so, cur.sR * fMouth * so); setSide('smileClosed', cur.sL * fMouth * (1 - so), cur.sR * fMouth * (1 - so)); setSide('frown', cur.fL * fMouth, cur.fR * fMouth);
+    VV.side = { so: +cur.so.toFixed(3), sL: +cur.sL.toFixed(3), sR: +cur.sR.toFixed(3), fL: +cur.fL.toFixed(3), fR: +cur.fR.toFixed(3) };
     if (rig.has['Brows up']) em.setValue('Brows up', clamp01(cur.bu * fBrow)); if (rig.has['Brows down']) em.setValue('Brows down', clamp01(cur.bd * fBrow));
     VV.vis = Object.fromEntries(Object.entries(vis).map(([k, v]) => [k, +v.toFixed(3)]));
   }
@@ -566,6 +609,7 @@ function applyAvatar(t, dt) {
     for (const n in dirs) if (rig.has[n]) em.setValue(n, clamp01(dirs[n]));
   }
   VV.gaze = { yaw: +yaw.toFixed(2), pitch: +pitch.toFixed(2), lu: +cur.lu.toFixed(3), ll: +cur.ll.toFixed(3), lr: +cur.lr.toFixed(3) };
+  if (VV.forceExpr) for (const n in VV.forceExpr) if (em.getExpression(n)) em.setValue(n, VV.forceExpr[n]); // 테스트용
   VV.cur = Object.fromEntries(Object.entries(cur).map(([k, v]) => [k, +(+v).toFixed(3)]));
   VV.expr = Object.fromEntries(Object.entries(exprOut).map(([k, v]) => [k, +v.toFixed(3)]));
 }
@@ -581,6 +625,7 @@ function loop(t) {
     catch (e) { console.error(e); VV.errors.push('detect: ' + e.message); }
     status(t - faceSeen < 600 ? `추적 중 (${tracker.delegate})` : '얼굴을 찾는 중…');
   } else if (mode === 'demo') { ingest(demoRaw(t), t / 1000); faceSeen = t; tN++; }
+  else if (mode === 'fake') { ingest({ bs: VV.fakeBS || {}, m: VV.fakeM || null }, t / 1000); faceSeen = t; tN++; } // 테스트용 블렌드쉐이프 직접 입력
   if (vrm && rig) { applyAvatar(t, dt); vrm.update(dt); }
   renderer.render(scene, camera);
   VV.frames++; fpsN++;
@@ -605,16 +650,20 @@ function obsUrl() {
   u.searchParams.set('obs', '1'); u.searchParams.set('autostart', '1');
   if (frame !== 'bust') u.searchParams.set('frame', frame);
   if (cam.zoom !== 1) u.searchParams.set('zoom', cam.zoom); if (cam.camY) u.searchParams.set('y', cam.camY); if (cam.camX) u.searchParams.set('x', cam.camX); if (cam.camRot) u.searchParams.set('rot', cam.camRot);
-  if (!W.TransparentBackground) u.searchParams.set('bg', W.ChromaKeyColor.replace('#', ''));
+  const bgSel = $('obsBg')?.value || (W.TransparentBackground ? 'transparent' : 'chroma');
+  if (bgSel === 'chroma') u.searchParams.set('bg', W.ChromaKeyColor.replace('#', '')); else if (bgSel === 'green') u.searchParams.set('bg', '00ff00');
+  const res = $('obsRes')?.value; if (res) u.searchParams.set('res', res);
+  const last = LS.get('vv_last_src', null); if (last && last !== DEFAULT_VRM && location.hostname.match(/^(localhost|127\.)/)) u.searchParams.set('vrm', last); // 로컬 서버에서만 (Pages엔 개인 아바타가 없음)
   const j = { s: diffSettings() }; const dm = diffMapping(); if (dm.length) j.m = dm; if (LS.get(EXPR_KEY, null)) j.e = engine.list;
   if (Object.keys(j.s).length || j.m || j.e) u.searchParams.set('ws', b64e(JSON.stringify(j)));
   return u.toString();
 }
+$('obsOpen') && ($('obsOpen').onclick = () => window.open(obsUrl().replace('autostart=1', 'demo=1'), '_blank'));
 $('obsCopy').onclick = async () => { const url = obsUrl(), msg = $('obsMsg'); msg.hidden = false; try { await navigator.clipboard.writeText(url); msg.textContent = '복사됨! OBS > 소스 추가 > 브라우저에 붙여넣기: ' + url; } catch { msg.textContent = '아래 주소를 길게 눌러 복사하세요: ' + url; } };
 window.__obsUrl = obsUrl;
 
 // ---------- 설정 내보내기 / 가져오기 ----------
-function exportJSON() { return { format: 'vrm-vtuber-warudo', version: 3, exportedAt: new Date().toISOString(), settings: structuredClone(W), mapping: structuredClone(MAP), expressions: structuredClone(engine.list), camera: { frame, ...cam } }; }
+function exportJSON() { return { format: 'vrm-vtuber-warudo', version: 4, exportedAt: new Date().toISOString(), settings: structuredClone(W), mapping: structuredClone(MAP), expressions: structuredClone(engine.list), camera: { frame, ...cam } }; }
 $('exportBtn').onclick = () => { const b = new Blob([JSON.stringify(exportJSON(), null, 2)], { type: 'application/json' }); const a = el('a', { href: URL.createObjectURL(b), download: 'vrm-vtuber-settings.json' }); document.body.append(a); a.click(); a.remove(); };
 function applyImport(json) {
   const r = WD.importWarudoJSON(json);
@@ -638,10 +687,10 @@ function applyImport(json) {
 async function importSettingsFile(file) { try { const j = JSON.parse(await file.text()); applyImport(j); $('fileSec').open = true; } catch (e) { showErr('JSON 파일을 읽지 못했어요: ' + (e.message || e)); } }
 $('importFile').onchange = e => { importSettingsFile(e.target.files[0]); e.target.value = ''; };
 $('resetW').onclick = () => { Object.assign(W, structuredClone(WD.DEFAULTS)); MAP = WD.defaultMapping(); reindexMap(); saveW(); refreshUI(); };
-VV.applyImport = applyImport; VV.exportJSON = exportJSON; VV.engine = engine; VV.mapped = () => mapped; VV.vrmConv = () => vrmConv; VV.loadVRM = loadVRM;
+VV.applyImport = applyImport; VV.exportJSON = exportJSON; VV.engine = engine; VV.mapped = () => mapped; VV.vrmConv = () => vrmConv; VV.loadVRM = loadVRM; VV.getVRM = () => vrm; VV.mouthOut = () => mouthOut; VV.startFake = (bs = {}) => { if (mode === 'track') stopCamera(); VV.fakeBS = bs; mode = 'fake'; status('테스트 입력'); };
 
 // 표정 단축키 (real: Warudo 온보딩 = Alt + 1…0 - = Q…P [ , Alt+Backspace 모두 끄기). 숫자·-·=·Backspace는 Alt 없이도 됨 (우리 편의)
-const CODE_KEY = { Minus: '-', Equal: '=', BracketLeft: '[', BracketRight: ']', Backspace: 'Backspace' };
+const CODE_KEY = { Minus: '-', Equal: '=', BracketLeft: '[', BracketRight: ']', Semicolon: ';', Comma: ',', Period: '.', Backspace: 'Backspace' };
 function keyLabel(e) { if (e.code?.startsWith('Digit')) return e.code.slice(5); if (e.code?.startsWith('Key')) return e.code.slice(3); return CODE_KEY[e.code] || (e.key?.length === 1 ? e.key.toUpperCase() : e.key); }
 document.addEventListener('keydown', e => {
   if (e.target?.closest?.('input,textarea,select')) return;
@@ -663,6 +712,8 @@ refreshUI(); buildExprButtons(); resize(); requestAnimationFrame(loop);
   let ok = false;
   if (params.get('vrm')) ok = await loadVRM(params.get('vrm'), params.get('vrm'));
   if (!ok && params.get('default') !== '1') { try { const saved = await idbGet(); if (saved?.buf) ok = await loadVRM(saved.buf, saved.name); } catch {} }
+  if (!ok && params.get('default') !== '1') { const last = LS.get('vv_last_src', null); if (last && await headOk(last)) ok = await loadVRM(last, last); }
+  if (!ok && params.get('default') !== '1' && await headOk(LOCAL_AVATARS[0].path)) ok = await loadVRM(LOCAL_AVATARS[0].path, LOCAL_AVATARS[0].label); // 로컬에 내 아바타가 있으면 그게 기본
   if (!ok) await loadVRM(DEFAULT_VRM, '기본');
-  if (params.get('demo') === '1') startDemo(); else if (params.get('autostart') === '1') startCamera();
+  if (params.get('fake') === '1') VV.startFake({}); else if (params.get('demo') === '1') startDemo(); else if (params.get('autostart') === '1') startCamera();
 })();

@@ -1,6 +1,6 @@
 <!doctype html><html lang="ko"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>3D VTuber (VRM)</title><link rel="icon" href="data:,"><link rel="stylesheet" href="style.css?v=4">
+<title>3D VTuber (VRM)</title><link rel="icon" href="data:,"><link rel="stylesheet" href="style.css?v=5">
 <script type="importmap">{"imports":{"three":"./lib/three/three.module.js","three/addons/":"./lib/three/addons/","@pixiv/three-vrm":"./lib/three-vrm/three-vrm.module.min.js"}}</script>
 </head><body>
 <div id="stage"><canvas id="c"></canvas><div id="drop" hidden>여기에 .vrm 파일을 놓으세요</div></div>
@@ -14,8 +14,8 @@
  <div id="err" hidden></div>
  <div class="hint" id="avatarName">아바타: -</div>
  <div class="row"><label class="filebtn">📂 VRM 불러오기<input type="file" id="vrmFile" accept=".vrm,model/gltf-binary,application/octet-stream" hidden></label><button id="vrmDefault">기본 아바타</button></div>
- <p class="hint">.vrm 파일을 화면에 끌어다 놓아도 돼요 (VRM 0.x / 1.0). 파일은 이 기기 안에만 저장돼요.</p>
- <div class="hint">표정 (Warudo처럼 Alt+1…0 - = Q…P [ , 모두 끄기 Alt+Backspace)</div>
+ <p class="hint">.vrm 파일을 화면에 끌어다 놓아도 돼요 (VRM 0.x / 1.0). 마지막으로 불러온 파일은 이 기기 브라우저에 저장돼서 다음에 자동으로 열려요 (서버로 보내지 않음).</p>
+ <div class="hint">표정 (Warudo처럼 Alt+1…0 - = Q…P [, 그 뒤 ] A…L ; Z…M , . 순서 · 모두 끄기 Alt+Backspace)</div>
  <div id="expr" class="row"></div>
 
  <div id="wpanel"></div>
@@ -30,7 +30,10 @@
  <details><summary>배경 · OBS</summary>
   <button id="green">그린스크린</button>
   <button id="clean">클린 뷰 (h)</button>
-  <button id="obsCopy">📋 OBS 브라우저 소스 주소 복사</button>
+  <div class="row"><label>OBS 배경 <select id="obsBg"><option value="transparent">투명</option><option value="green">크로마키 초록 (#00ff00)</option><option value="chroma">설정의 크로마키 색</option></select></label>
+  <label>해상도 <select id="obsRes"><option value="1920x1080">1920×1080</option><option value="1280x720">1280×720</option><option value="1080x1920">1080×1920 (세로)</option><option value="">창 크기에 맞춤</option></select></label></div>
+  <button id="obsCopy">📋 OBS 브라우저 소스 주소 복사</button> <button id="obsOpen">미리 보기 (데모)</button>
+  <p class="hint">OBS 브라우저 소스의 너비·높이를 고른 해상도와 같게 하세요. UI는 모두 숨겨져요. OBS는 따로 된 브라우저라, 개인 VRM은 OBS 소스의 "상호작용"에서 한 번 불러오면 기억해요(로컬 서버에서는 주소에 자동 포함).</p>
   <div id="obsMsg" class="hint" hidden></div>
  </details>
  <details id="fileSec"><summary>설정 파일 · Warudo 가져오기</summary>
@@ -39,6 +42,6 @@
   <p class="hint">Warudo 씬 파일(.json, Warudo 데이터 폴더의 Scenes 안)을 넣으면 트래커·캐릭터·카메라 설정, 블렌드쉐이프 매핑, 표정, 표정 단축키, 얼굴 추적 Blueprint 값을 가져와요. 실제 Warudo 0.15.1 씬 파일로 확인했어요.</p>
   <pre id="importMsg" class="hint" hidden></pre>
  </details>
- <p class="hint">단축키: Alt+1…0, Alt+- = Q W E R T Y U I O P [ 표정 (Warudo 온보딩과 같음, 숫자·-·=는 Alt 없이도) · Backspace 모두 끄기 · h 클린 뷰 · Esc/더블탭 해제<br>이름 옆 작은 영어는 Warudo 설정 이름이에요. 표시: <b class="src real">실측</b> 실제 Warudo 씬 파일로 확인 · <b class="src doc">문서</b> 공식 문서 · <b class="src sdk">SDK</b> Warudo SDK 기본값 · <b class="src inferred">추정</b> · <b class="src ours">전용</b> Warudo에 없음<br>영상·음성은 이 브라우저 안에서만 처리되고 어디에도 전송되지 않아요.</p>
+ <p class="hint">단축키: Alt+1…0, Alt+- = Q W E R T Y U I O P [ 표정 (Warudo 온보딩과 같음, 숫자·-·=는 Alt 없이도) · 24번째부터 Alt+] A S D F G H J K L ; Z X C V B N M , . (추정 확장) · Backspace 모두 끄기 · h 클린 뷰 · Esc/더블탭 해제<br>이름 옆 작은 영어는 Warudo 설정 이름이에요. 표시: <b class="src real">실측</b> 실제 Warudo 씬 파일로 확인 · <b class="src doc">문서</b> 공식 문서 · <b class="src sdk">SDK</b> Warudo SDK 기본값 · <b class="src inferred">추정</b> · <b class="src ours">전용</b> Warudo에 없음<br>영상·음성은 이 브라우저 안에서만 처리되고 어디에도 전송되지 않아요.</p>
 </div>
-<script type="module" src="js/app.js?v=3"></script></body></html>
+<script type="module" src="js/app.js?v=4"></script></body></html>

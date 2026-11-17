@@ -21,7 +21,7 @@ async def main():
                 r = await pg.evaluate('JSON.stringify({t:performance.now(),tr:__vv.tracking,raw:__vv.raw,tf:__vv.tfps})'); series.append(r)
                 await pg.wait_for_timeout(250)
             await pg.screenshot(path=f'{PREFIX}-{ts:g}s.png'); i += 1
-            print(ts, await pg.evaluate('JSON.stringify({status:__vv.status,tracking:__vv.tracking,fps:__vv.fps,tfps:__vv.tfps,raw:__vv.raw,eL:__vv.cur&&__vv.cur.eL,eR:__vv.cur&&__vv.cur.eR,calib:__vv.calibrated,err:__vv.errors})'))
+            print(ts, await pg.evaluate('JSON.stringify({status:__vv.status,tracking:__vv.tracking,fps:__vv.fps,tfps:__vv.tfps,raw:__vv.raw,eL:__vv.cur&&__vv.cur.eL,eR:__vv.cur&&__vv.cur.eR,calib:__vv.calibrated,err:__vv.errors,vis:__vv.vis,side:__vv.side,uu:__vv.mapped().mouthUpperUpLeft})'))
         print('\n'.join(logs[-15:]))
         await b.close()
 asyncio.run(main())

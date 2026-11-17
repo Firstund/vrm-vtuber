@@ -154,6 +154,27 @@
 | **light direction** / 조명 방향(°) | -25 | -90 ~ 90 (UI 범위) | Warudo에 없음, v1 동작 유지 | 우리 전용 | - |
 | **camera preview** / 카메라 미리보기 | 꺼짐 | 켬/끔 | Warudo에 없음, v1 동작 유지 | 우리 전용 | - |
 
+## 입 따라하기 확장 (v4, 우리 전용)
+Warudo VRM 그래프의 입 공식(aa·ih·ou·oh, 제약 4개)을 그대로 기본으로 두고, 그 위에 덧붙였어요. **입 방식 = Warudo** 이면 Warudo와 같은 결과(ee·입꼬리·입 다물기 없음, 입 부드럽게 = BlendShape Smooth 0.2초).
+
+| 설정 (이름 / 한국어) | 기본값 | 범위 | 뜻 · 우리 계산 | 근거 |
+|---|---|---|---|---|
+| **MouthMode** / 입 방식 | Extended | Extended / Warudo | Warudo = 실제 Warudo 그래프만 | 우리 전용 |
+| **MouthGain** / 입 반응 크기 | 1 | 0.5 ~ 2.5 | 모음 값 × 배율 (1 = Warudo) | 우리 전용 |
+| **MouthVariety** / 입 모양 다양성 | 1 | 0 ~ 1.5 | 0 = Warudo 그대로, 클수록 ee·입꼬리·입 다물기 강하게 | 우리 전용 |
+| **MouthSmoothTime** / 입 부드럽게(초) | 0.06 | 0 ~ 0.4 | 입만 따로 짧게 (Warudo 표정 0.2초보다 빠름) | 우리 전용 |
+| **MouthAsymmetry** / 입꼬리 좌우 따로 | 켜짐 | 켬/끔 | 한쪽 입꼬리만 올리기·내리기 | 우리 전용 |
+
+계산 (모두 **추정**, Warudo 자료에 없음):
+- ee = (mouthStretchL+R)×1.5 × 입 벌림(jaw×5, 최대 1) × (1 − 미소×0.75). '이'(미소+당김)와 '에'(당김만)를 나눔.
+- 입 다물기 = mouthClose×2.5 + mouthPress×0.6 + mouthRoll×0.6 (최대 1) → aa·ih·oh에 (1−다물기), ou는 절반만 줄임.
+- 모음 합이 1.3을 넘으면 비율대로 줄임, aa가 크면 ee를 줄임(제약).
+- 입꼬리: smile = mouthSmile×1.3 − 0.05 (좌우 따로), frown = mouthFrown×1.5. 벌린 입(aa)이 크면 미소를 반까지 줄임.
+- 아바타에 ARKit 입 셰이프가 있으면 ARKit 경로(1:1, Warudo ARKit 방식)를 쓰고 입 반응 크기·입 부드럽게만 적용.
+- 아바타에 입꼬리 좌우 셰이프가 없으면, 입 미소 표정(이름이 `happy_mouth`/`mouth_smile` 등)과 입 찡그림(`sad_mouth` 등), 다문 미소(`relaxed_mouth`)의 블렌드쉐이프를 **실행 중 메모리에서만** 왼쪽·오른쪽 절반으로 나눈 사본을 만들어 씀(원본 파일은 그대로). 벌린 미소/다문 미소는 입 벌림(jaw)·윗입술 올림(mouthUpperUp)으로 섞음.
+- 혀(tongue) 셰이프가 있으면 표정 목록에 그대로 나오고 단축키를 붙일 수 있음.
+- 단축키: Warudo 온보딩 23개(Alt+1…0 - = Q…P [) 뒤로 ] A…L ; Z…M , . 를 이어 붙임(추정 확장, 표정이 많은 아바타용).
+
 ## Warudo 씬 파일 가져오기 결과 (실제 파일)
 - 입력값 281개(에셋 6개 + 사용하는 Blueprint 노드 7개) 중: **가져옴 69**, 다른 노드에 연결돼 상수가 아님 9 (예: Look At Weight), 웹에 해당 없음 200 (손 추적, 후처리 효과, Ragdoll, 출력 장치 등), **모름/미구현 3** (`TrackingEnabled`, `LookAtTarget`, `EnablePoseTracking`).
 - 그 밖에 블렌드쉐이프 매핑 52줄, 표정 23개, 단축키 24개, 립싱크 유무, 매핑 종류(VRM)를 가져와요. 가져온 뒤 우리 기본값과 다른 값은 BlendShape Mapping(Auto → VRM) 하나뿐이에요 (= 기본값이 실제 Warudo와 같음).
@@ -166,4 +187,5 @@
 - 실제 움직임 비교(같은 얼굴 움직임 → 같은 결과)는 아직 안 함. 화면 비교 자료가 필요해요.
 
 ## 미구현
+- 입 전체 좌우 이동(mouthLeft/Right): 해당 블렌드쉐이프나 턱 뼈가 없는 아바타에서는 표현 못 함.
 - 대기 애니메이션(AGIA Idle), Additional Bone Offsets, Constrained BlendShapes, Material Properties, Toggle GameObjects, Pendulum Physics, Ragdoll, Body IK, 손·자세 추적, 조명(Directional Light) 에셋.

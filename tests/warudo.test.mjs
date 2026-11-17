@@ -130,3 +130,39 @@ test('real 씬 파일 가져오기 (있을 때만)', { skip: !fs.existsSync(REAL
 });
 test('모르는 JSON → 안내 메모', () => { const r = WD.importWarudoJSON({ foo: 1 }); assert.equal(r.found.length, 0); assert.ok(r.notes.length); });
 test('우리 내보내기 형식 왕복', () => { const r = WD.importWarudoJSON({ format: 'vrm-vtuber-warudo', settings: { EyeBlinkSensitivity: 0.9, BodyRotationType: 'None' } }); assert.equal(r.settings.EyeBlinkSensitivity, 0.9); assert.equal(r.settings.BodyRotationType, 'None'); });
+
+// ---- v4: 입 따라하기 확장 ----
+test('mouthExtended: Warudo 모드 = Warudo VRM 그래프 결과와 같음', () => {
+  const bs = { jawOpen: 0.6, mouthFunnel: 0.2, mouthPucker: 0.3, mouthSmileLeft: 0.4, mouthSmileRight: 0.1, mouthStretchLeft: 0.5, mouthClose: 0.3 };
+  const w = WD.vrmFromArkit(bs, {}), o = WD.mouthExtended(bs, { MouthMode: 'Warudo' });
+  for (const k of ['aa', 'ih', 'ou', 'oh']) assert.ok(Math.abs(o[k] - w[k]) < 1e-9, k);
+  assert.equal(o.ee, 0); assert.equal(o.smileL, 0); assert.equal(o.close, 0);
+});
+test('mouthExtended: 확장 모드 ee·입 다물기·좌우 입꼬리', () => {
+  const e = WD.mouthExtended({ jawOpen: 0.4, mouthStretchLeft: 0.5, mouthStretchRight: 0.5 }, WD.DEFAULTS);
+  assert.ok(e.ee > 0.5, 'ee ' + e.ee);
+  const i = WD.mouthExtended({ jawOpen: 0.3, mouthSmileLeft: 0.45, mouthSmileRight: 0.45, mouthStretchLeft: 0.25, mouthStretchRight: 0.25 }, WD.DEFAULTS);
+  assert.ok(i.ih > i.ee, '이: ih > ee');
+  const c = WD.mouthExtended({ jawOpen: 0.3, mouthClose: 0.5 }, WD.DEFAULTS);
+  assert.ok(c.close > 0.9 && c.aa < 0.05, 'closed');
+  const s = WD.mouthExtended({ mouthSmileLeft: 0.8 }, WD.DEFAULTS);
+  assert.ok(s.smileL > 0.8 && s.smileR === 0, 'one side');
+  const sym = WD.mouthExtended({ mouthSmileLeft: 0.8 }, { ...WD.DEFAULTS, MouthAsymmetry: false });
+  assert.ok(Math.abs(sym.smileL - sym.smileR) < 1e-9);
+  const g = WD.mouthExtended({ jawOpen: 0.3 }, { ...WD.DEFAULTS, MouthGain: 2 }), g1 = WD.mouthExtended({ jawOpen: 0.3 }, WD.DEFAULTS);
+  assert.ok(g.aa > g1.aa * 1.9);
+  const v0 = WD.mouthExtended({ jawOpen: 0.4, mouthStretchLeft: 0.5, mouthSmileLeft: 0.6 }, { ...WD.DEFAULTS, MouthVariety: 0 });
+  assert.equal(v0.ee, 0); assert.equal(v0.smileL, 0);
+});
+test('mouth 설정 기본값 / 범위', () => {
+  assert.equal(WD.DEFAULTS.MouthMode, 'Extended'); assert.equal(WD.DEFAULTS.MouthSmoothTime, 0.06); assert.ok(WD.DEFAULTS.MouthSmoothTime < WD.DEFAULTS.BlendShapeSmoothTime);
+});
+test('findMouthChannels / sideWeight', () => {
+  const ch = WD.findMouthChannels(['aa', 'happy', 'happy_mouth', 'relaxed_mouth', 'sad_mouth', 'angry_eye']);
+  assert.equal(ch.smile, 'happy_mouth'); assert.equal(ch.smileClosed, 'relaxed_mouth'); assert.equal(ch.frown, 'sad_mouth'); assert.deepEqual(ch.tongue, []);
+  assert.equal(WD.findMouthChannels(['joy']).smile, null);
+  assert.deepEqual(WD.findMouthChannels(['TongueOut']).tongue, ['TongueOut']);
+  const [l, r] = WD.sideWeight(0, 0, 1); assert.ok(Math.abs(l - 0.5) < 1e-9 && Math.abs(r - 0.5) < 1e-9);
+  assert.deepEqual(WD.sideWeight(5, 0, 1), [1, 0]); assert.deepEqual(WD.sideWeight(-5, 0, 1), [0, 1]);
+});
+test('표정 단축키 40개까지', () => { assert.ok(WD.HOTKEY_KEYS.length >= 40); assert.equal(new Set(WD.HOTKEY_KEYS).size, WD.HOTKEY_KEYS.length); });

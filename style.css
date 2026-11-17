@@ -49,3 +49,5 @@ body.clean #panel,body.clean #hud,body.clean #video,body.clean #panelToggle{disp
 #importMsg{white-space:pre-wrap;background:#0004;padding:6px;border-radius:6px;max-height:220px;overflow:auto}
 .w[hidden]{display:none!important}
 #expr small{opacity:.6;font-size:10px}
+
+body.fixedres #c{object-fit:contain}
