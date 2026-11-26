@@ -416,6 +416,8 @@ const avg = (bs, a, b) => ((bs[a] || 0) + (bs[b] || 0)) / 2;
 const gazeOf = bs => [((bs.eyeLookOutLeft || 0) + (bs.eyeLookInRight || 0) - (bs.eyeLookInLeft || 0) - (bs.eyeLookOutRight || 0)) / 2, ((bs.eyeLookUpLeft || 0) + (bs.eyeLookUpRight || 0) - (bs.eyeLookDownLeft || 0) - (bs.eyeLookDownRight || 0)) / 2];
 const warudoSmooth = () => W.SmoothingMode !== 'OneEuro';
 function ingest(raw, tSec) {
+  // 데모는 원점 기준의 상대 동작이다. 실제 카메라의 거리·회전·시선 보정을 섞지 않는다.
+  const poseNeutral = raw.synthetic ? null : neutral;
   const F = (k, v, mc, b) => warudoSmooth() ? v : bank.run(k, v, tSec, mc, b); // Warudo 방식이면 부드럽게는 applyAvatar의 Smooth 노드에서
   // 1) 블렌드쉐이프: 트래커 처리 (좌우반전 → 개별 매핑 → 민감도 → 제한)
   mapped = WD.processBlendShapes(raw.bs, W, MAPI);
@@ -427,12 +429,12 @@ function ingest(raw, tSec) {
   // 2) 머리 회전/이동: 보정(Calibrate) 기준 → 좌우반전 → Head Rotation Intensity·Offset / Head Movement Intensity
   if (raw.m) {
     _m.fromArray(raw.m); _m.decompose(_p, _q, _s);
-    if (neutral) _q.premultiply(_qi.copy(neutral.q).invert());
+    if (poseNeutral) _q.premultiply(_qi.copy(poseNeutral.q).invert());
     if (W.MirroredTracking) { _q.y = -_q.y; _q.z = -_q.z; }
     _e.setFromQuaternion(_q, 'YXZ');
     const I = W.HeadRotationIntensity, O = W.HeadRotationOffset;
     const hx = clamp(_e.x * R2D * I[0] + O[0], -90, 90), hy = clamp(_e.y * R2D * I[1] + O[1], -90, 90), hz = clamp(_e.z * R2D * I[2] + O[2], -90, 90);
-    const t = [_p.x - (neutral ? neutral.t.x : 0), _p.y - (neutral ? neutral.t.y : 0), _p.z - (neutral ? neutral.t.z : 0)];
+    const t = [_p.x - (poseNeutral ? poseNeutral.t.x : 0), _p.y - (poseNeutral ? poseNeutral.t.y : 0), _p.z - (poseNeutral ? poseNeutral.t.z : 0)];
     if (W.MirroredTracking) t[0] = -t[0];
     const tm = WD.headTranslation(t, W);
     tgt.hx = F('hx', hx); tgt.hy = F('hy', hy); tgt.hz = F('hz', hz);
@@ -440,7 +442,7 @@ function ingest(raw, tSec) {
   }
   // 3) 시선 (+gx = 아바타 왼쪽, +gy = 위). 보정 시 시선도 보정(Calibrate Eye Movement)
   const [gx, gy] = gazeOf(bs);
-  const c = W.CalibrateEyeMovement && neutral ? neutral : { gx: 0, gy: 0 };
+  const c = W.CalibrateEyeMovement && poseNeutral ? poseNeutral : { gx: 0, gy: 0 };
   tgt.gx = gx - c.gx; tgt.gy = gy - c.gy;
   // 4) VRM 매핑: 실제 Warudo Blueprint의 변환 공식 그대로 (real)
   vrmConv = WD.vrmFromArkit(bs, W);
@@ -461,10 +463,11 @@ function ingest(raw, tSec) {
     e.surprised = smoothstep((browUp * 0.6 + wideEye * 0.9 + jaw * 0.25 - 0.55) / 0.35) * (1 - e.happy) * es;
   }
   for (const k in e) tgt[k] = bank.run('e_' + k, clamp01(e[k]), tSec, 0.8);
-  lastRaw = { bs: raw.bs, m: raw.m };
+  lastRaw = { bs: raw.bs, m: raw.m, synthetic: !!raw.synthetic };
   VV.raw = { jaw: +(raw.bs.jawOpen || 0).toFixed(3), blinkL: +(raw.bs.eyeBlinkLeft || 0).toFixed(3), blinkR: +(raw.bs.eyeBlinkRight || 0).toFixed(3), mappedBlinkL: +mapped.eyeBlinkLeft.toFixed(3), mappedBlinkR: +mapped.eyeBlinkRight.toFixed(3), hx: +tgt.hx.toFixed(2), hy: +tgt.hy.toFixed(2), hz: +tgt.hz.toFixed(2) };
 }
 function calibrate() { // Warudo Calibrate: 머리 회전·위치 기준(+시선). 블렌드쉐이프는 보정하지 않음
+  if (lastRaw?.synthetic) { showErr('정면 보정은 카메라로 얼굴을 인식한 뒤 사용해 주세요. 데모 자세는 자동으로 정렬됩니다.'); return; }
   if (!lastRaw || !lastRaw.m) { showErr('얼굴이 인식된 상태에서 눌러 주세요.'); return; }
   _m.fromArray(lastRaw.m); _m.decompose(_p, _q, _s);
   const [gx, gy] = gazeOf(WD.processBlendShapes(lastRaw.bs, W, MAPI));
@@ -479,8 +482,8 @@ function demoRaw(t) {
   const s = t / 1000;
   const yaw = Math.sin(s * 0.7) * 28 + Math.sin(s * 1.9) * 4, pitch = Math.sin(s * 0.53 + 1) * 14, roll = Math.sin(s * 0.41 + 2) * 12;
   _e.set(pitch * D2R, (W.MirroredTracking ? -yaw : yaw) * D2R, (W.MirroredTracking ? -roll : roll) * D2R, 'YXZ'); _q.setFromEuler(_e);
-  if (neutral) _q.premultiply(neutral.q);
-  _m.compose(new THREE.Vector3(Math.sin(s * 0.33) * 6 + (neutral ? neutral.t.x : 0), (neutral ? neutral.t.y : 0), (neutral ? neutral.t.z : -40)), _q, new THREE.Vector3(1, 1, 1));
+  // 가상 카메라의 절대 거리(-40cm)를 넣으면 상체가 뒤로 기울어진다.
+  _m.compose(new THREE.Vector3(Math.sin(s * 0.33) * 6, 0, 0), _q, new THREE.Vector3(1, 1, 1));
   const ph = (s % 12);
   const blinkPh = (s % 3.7) < 0.16 ? 1 : 0, winkPh = ph > 9.5 && ph < 10.3 ? 1 : 0;
   const vowel = Math.floor(s * 2.2) % 6; const talk = ph < 6 ? Math.abs(Math.sin(s * 9)) : 0;
@@ -491,7 +494,7 @@ function demoRaw(t) {
     browDownLeft: ph > 10.5 && ph < 12 ? 0.8 : 0, browDownRight: ph > 10.5 && ph < 12 ? 0.8 : 0,
     eyeLookOutLeft: Math.max(0, Math.sin(s * 1.3)) * 0.5, eyeLookInRight: Math.max(0, Math.sin(s * 1.3)) * 0.5,
     eyeLookInLeft: Math.max(0, -Math.sin(s * 1.3)) * 0.5, eyeLookOutRight: Math.max(0, -Math.sin(s * 1.3)) * 0.5 };
-  return { bs, m: _m.toArray() };
+  return { bs, m: _m.toArray(), synthetic: true };
 }
 
 // ---------- 카메라 ----------
